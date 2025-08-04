@@ -1,8 +1,9 @@
 """
-GLiNER2 - Advanced Information Extraction Engine
+GLiNER2 - Advanced Information Extraction Engine with Batch Processing
 
 This module provides an intuitive schema-based interface for extracting
-structured information from text using the GLiNER2 model.
+structured information from text using the GLiNER2 model, with efficient
+batch processing capabilities.
 
 Quick Examples
 --------------
@@ -12,7 +13,15 @@ Extract entities:
     ...     "Apple released iPhone 15 in September 2023.",
     ...     ["company", "product", "date"]
     ... )
-    >>> # {'entities': {'company': ['Apple'], 'product': ['iPhone 15'], 'date': ['September 2023']}}
+    >>> # {'entities': {'company': ['Apple'], 'pxxroduct': ['iPhone 15'], 'date': ['September 2023']}}
+
+Batch processing:
+    >>> results = extractor.batch_extract_entities(
+    ...     ["Text 1 about Apple.", "Text 2 about Google.", "Text 3 about Microsoft."],
+    ...     ["company", "product", "person"],
+    ...     batch_size=8
+    ... )
+    >>> # Returns list of results, one per text
 
 Extract structured data:
     >>> results = extractor.extract_json(
@@ -37,12 +46,15 @@ Complex multi-task extraction:
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, Tuple
 from typing import Pattern, Literal
 
 import torch
+import torch.nn.functional as F
 from gliner2.model import Extractor
 
 
@@ -169,31 +181,6 @@ class StructureBuilder:
         -------
         StructureBuilder
             Returns self for method chaining.
-
-        Examples
-        --------
-        >>> # Simple field extraction
-        >>> builder.field("address")
-
-        >>> # Single-choice classification
-        >>> builder.field("priority", dtype="str", choices=["high", "medium", "low"])
-
-        >>> # Multi-choice classification
-        >>> builder.field("amenities", dtype="list",
-        ...               choices=["wifi", "parking", "pool", "gym"],
-        ...               description="Available amenities at the location")
-
-        >>> # Field with custom threshold
-        >>> builder.field("phone", threshold=0.8)
-
-        >>> # High-precision field
-        >>> builder.field("email", dtype="str", threshold=0.9,
-        ...               description="Contact email address")
-
-        >>> # Field with regex validation
-        >>> builder.field("email", dtype="str", validators=[
-        ...     RegexValidator(r"^[\w\.-]+@[\w\.-]+\.\w+$")
-        ... ])
         """
         # Store field in schema format
         self.fields[name] = {"value": "", "choices": choices} if choices else ""
@@ -294,31 +281,6 @@ class Schema:
         -------
         StructureBuilder
             A builder object for adding fields to this structure.
-
-        Examples
-        --------
-        >>> # Extract product information
-        >>> schema = (extractor.create_schema()
-        ...     .structure("product")
-        ...         .field("name", dtype="str")
-        ...         .field("price")
-        ...         .field("category", dtype="str",
-        ...                choices=["electronics", "clothing", "food"])
-        ... )
-
-        >>> # Extract multiple addresses
-        >>> schema = (extractor.create_schema()
-        ...     .structure("address")
-        ...         .field("street")
-        ...         .field("city", dtype="str")
-        ...         .field("country", dtype="str")
-        ... )
-
-        Notes
-        -----
-        - Any previously active structure is automatically finished
-        - No need to explicitly call finish() - it's handled automatically
-        - The extractor will find ALL instances of this structure in the text
         """
         # Auto-finish any active structure builder
         if self._active_structure_builder:
@@ -366,41 +328,6 @@ class Schema:
         -------
         Schema
             Returns self for method chaining.
-
-        Examples
-        --------
-        >>> # Simple sentiment classification
-        >>> schema = (extractor.create_schema()
-        ...     .classification("sentiment", ["positive", "negative", "neutral"])
-        ... )
-
-        >>> # Multi-label classification with descriptions
-        >>> schema = (extractor.create_schema()
-        ...     .classification("topics",
-        ...         {
-        ...             "technology": "Related to computers, AI, or gadgets",
-        ...             "business": "Related to companies, finance, or economy",
-        ...             "health": "Related to medicine, wellness, or healthcare"
-        ...         },
-        ...         multi_label=True,
-        ...         cls_threshold=0.3
-        ...     )
-        ... )
-
-        >>> # High-precision classification
-        >>> schema = (extractor.create_schema()
-        ...     .classification("priority",
-        ...         ["urgent", "high", "medium", "low"],
-        ...         cls_threshold=0.8
-        ...     )
-        ... )
-
-        Notes
-        -----
-        - For multi_label=False, returns (label, confidence) tuple
-        - For multi_label=True, returns list of (label, confidence) tuples
-        - Label descriptions significantly improve accuracy
-        - Lower thresholds = more labels selected (for multi_label)
         """
         # Auto-finish any active structure builder
         if self._active_structure_builder:
@@ -464,45 +391,6 @@ class Schema:
         -------
         Schema
             Returns self for method chaining.
-
-        Examples
-        --------
-        >>> # Simple entity extraction
-        >>> schema = extractor.create_schema().entities(["person", "location", "date"])
-
-        >>> # Single entity per type
-        >>> schema = extractor.create_schema().entities(
-        ...     ["company", "ceo"],
-        ...     dtype="str"
-        ... )
-
-        >>> # Entities with descriptions
-        >>> schema = extractor.create_schema().entities({
-        ...     "drug": "Pharmaceutical drug or medication names",
-        ...     "disease": "Medical conditions or diseases",
-        ...     "symptom": "Medical symptoms or side effects"
-        ... })
-
-        >>> # Advanced configuration per entity
-        >>> schema = extractor.create_schema().entities({
-        ...     "email": {
-        ...         "description": "Email addresses",
-        ...         "dtype": "list",
-        ...         "threshold": 0.9
-        ...     },
-        ...     "phone": {
-        ...         "description": "Phone numbers",
-        ...         "dtype": "str",
-        ...         "threshold": 0.8
-        ...     }
-        ... })
-
-        Notes
-        -----
-        - Entities are extracted as exact text spans from the input
-        - Multiple calls to entities() are cumulative
-        - Entity descriptions improve extraction accuracy
-        - Results are returned as {"entities": [{"type1": [...], "type2": [...]}]}
         """
         # Auto-finish any active structure builder
         if self._active_structure_builder:
@@ -563,28 +451,6 @@ class Schema:
         -------
         Dict[str, Any]
             The complete schema dictionary ready for extraction.
-
-        Examples
-        --------
-        >>> # Explicit build
-        >>> schema_builder = extractor.create_schema()
-        >>> schema_builder.entities(["person", "location"])
-        >>> schema_builder.classification("sentiment", ["positive", "negative"])
-        >>> schema_dict = schema_builder.build()
-
-        >>> # Implicit build (recommended)
-        >>> # No need to call build() when using extract()
-        >>> results = extractor.extract(
-        ...     text,
-        ...     schema_builder  # build() is called automatically
-        ... )
-
-        Notes
-        -----
-        - Automatically finishes any incomplete structures
-        - Not necessary to call when using extract()
-        - Can be used to inspect the schema structure
-        - Safe to call multiple times
         """
         # Auto-finish any active structure builder
         if self._active_structure_builder:
@@ -594,20 +460,33 @@ class Schema:
         return self.schema
 
 
+@dataclass
+class BatchEncodingResult:
+    """Container for batch encoding results."""
+    token_embeddings: torch.Tensor
+    original_lengths: List[int]
+    mapped_indices: List[List[Tuple[str, int, int]]]
+    transformed_data: List[Dict[str, Any]]
+    batch_indices: List[int]  # Maps back to original batch position
+
+
 class GLiNER2(Extractor):
     """
-    Advanced information extraction model with intuitive schema-based API.
+    Advanced information extraction model with intuitive schema-based API
+    and efficient batch processing capabilities.
 
     GLiNER2 provides a clean, powerful interface for extracting structured
     information from text including entities, classifications, and complex
     nested data structures. It uses a schema-based approach that allows
-    combining multiple extraction tasks together.
+    combining multiple extraction tasks together, with support for efficient
+    batch processing.
 
     Key Features
     ------------
     - **Entity Extraction**: Extract named entities like persons, locations, etc.
     - **Text Classification**: Single/multi-label document classification
     - **Structured Extraction**: Extract complex nested data structures
+    - **Batch Processing**: Efficient processing of multiple texts
     - **Field-level Control**: Set custom thresholds and types per field
     - **Auto-completion**: No need to explicitly finish/build schemas
     - **Order Preservation**: Maintains field and entity ordering
@@ -625,6 +504,14 @@ class GLiNER2(Extractor):
     ...     ["company", "product", "location"]
     ... )
     >>>
+    >>> # Batch processing
+    >>> texts = ["Text 1...", "Text 2...", "Text 3..."]
+    >>> results = extractor.batch_extract_entities(
+    ...     texts,
+    ...     ["person", "organization", "location"],
+    ...     batch_size=8
+    ... )
+    >>>
     >>> # Complex multi-task extraction
     >>> schema = (extractor.create_schema()
     ...     .entities(["person", "date"])
@@ -635,64 +522,14 @@ class GLiNER2(Extractor):
     ...         .field("type", choices=["conference", "launch", "meeting"])
     ... )
     >>> results = extractor.extract(text, schema)
-
-    Schema Building
-    ---------------
-    The schema provides a fluent interface for defining what to extract:
-
-    1. **Entities**: Simple named entity recognition
-       ```python
-       schema.entities(["person", "organization", "location"])
-       ```
-
-    2. **Classification**: Document-level labels
-       ```python
-       schema.classification("category", ["tech", "finance", "health"])
-       ```
-
-    3. **Structures**: Complex field extraction
-       ```python
-       schema.structure("product")
-              .field("name", dtype="str")
-              .field("features", dtype="list")
-              .field("category", choices=["electronics", "software"])
-       ```
-
-    Output Format
-    -------------
-    Results are organized by extraction type:
-    ```python
-    {
-        "entities": {
-            "person": ["John Doe", "Jane Smith"],
-            "location": ["New York"]
-        },
-        "sentiment": "positive",
-        "product": [
-            {
-                "name": "iPhone",
-                "features": ["5G", "Camera"],
-                "category": "electronics"
-            }
-        ]
-    }
-    ```
-
-    Advanced Usage
-    --------------
-    - **Custom Thresholds**: `field("price", threshold=0.9)`
-    - **Descriptions**: `entities({"drug": "Medication names"})`
-    - **Raw Results**: `extract(text, schema, format_results=False)`
-    - **Confidence Scores**: `include_confidence=True`
-
-    See Also
-    --------
-    create_schema : Start building a new extraction schema
-    extract : Main extraction method
-    extract_entities : Quick entity extraction
-    classify_text : Quick text classification
-    extract_json : Quick structured extraction
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Cache for processed schemas
+        self._schema_cache = {}
+        # Cache for entity encodings
+        self._encoding_cache = {}
 
     def create_schema(self) -> Schema:
         """
@@ -705,36 +542,590 @@ class GLiNER2(Extractor):
         -------
         Schema
             A new schema instance for chaining extraction tasks.
-
-        Examples
-        --------
-        >>> # Simple entity extraction
-        >>> schema = extractor.create_schema().entities(["person", "location"])
-
-        >>> # Complex multi-task extraction
-        >>> schema = (extractor.create_schema()
-        ...     .entities({
-        ...         "person": "Names of people mentioned",
-        ...         "organization": "Company or organization names"
-        ...     })
-        ...     .classification("sentiment", ["positive", "negative", "neutral"])
-        ...     .structure("contact_info")
-        ...         .field("email", dtype="str")
-        ...         .field("phone", dtype="list")
-        ...     .structure("product")
-        ...         .field("name", dtype="str")
-        ...         .field("price")
-        ...         .field("category", dtype="str",
-        ...                choices=["electronics", "clothing", "food"])
-        ... )
-
-        See Also
-        --------
-        Schema : The schema class with available methods
-        extract : Method to run extraction with the schema
         """
         return Schema()
 
+    def _get_schema_hash(self, schema_dict: Dict[str, Any]) -> str:
+        """Generate a hash for schema caching."""
+        return hashlib.md5(json.dumps(schema_dict, sort_keys=True).encode()).hexdigest()
+
+    def _prepare_batch_inputs(
+            self,
+            input_list: List[Dict[str, Any]]
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
+        """
+        Prepare batch inputs with proper padding and attention masks.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor, List[int]]
+            - Padded input_ids tensor
+            - Attention mask tensor
+            - Original sequence lengths
+        """
+        # Find max length
+        max_length = max(inp["inputs"]["input_ids"].shape[1] for inp in input_list)
+
+        # Prepare tensors
+        batch_size = len(input_list)
+        device = next(self.encoder.parameters()).device
+
+        padded_input_ids = torch.zeros(
+            (batch_size, max_length),
+            dtype=torch.long,
+            device=device
+        )
+        attention_mask = torch.zeros(
+            (batch_size, max_length),
+            dtype=torch.long,
+            device=device
+        )
+        original_lengths = []
+
+        # Fill tensors
+        for i, inp in enumerate(input_list):
+            seq_len = inp["inputs"]["input_ids"].shape[1]
+            padded_input_ids[i, :seq_len] = inp["inputs"]["input_ids"][0]
+            attention_mask[i, :seq_len] = inp["inputs"]["attention_mask"][0]
+            original_lengths.append(seq_len)
+
+        return padded_input_ids, attention_mask, original_lengths
+
+    def _batch_encode(
+            self,
+            prepared_records: List[Dict[str, Any]],
+            batch_size: int = 8
+    ) -> List[BatchEncodingResult]:
+        """
+        Batch encode multiple texts through the transformer encoder.
+
+        Parameters
+        ----------
+        prepared_records : List[Dict[str, Any]]
+            List of prepared records with inputs and metadata
+        batch_size : int, default=8
+            Batch size for encoder forward pass
+
+        Returns
+        -------
+        List[BatchEncodingResult]
+            Encoded representations for each input text
+        """
+        all_results = []
+
+        with torch.no_grad():
+            for batch_start in range(0, len(prepared_records), batch_size):
+                batch_end = min(batch_start + batch_size, len(prepared_records))
+                batch = prepared_records[batch_start:batch_end]
+
+                # Prepare batch inputs
+                input_ids, attention_mask, lengths = self._prepare_batch_inputs(batch)
+
+                # Forward pass through encoder
+                outputs = self.encoder(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask
+                )
+
+                # Extract embeddings for each item in batch
+                for i, record in enumerate(batch):
+                    seq_len = lengths[i]
+                    token_embeddings = outputs.last_hidden_state[i, :seq_len, :]
+
+                    # Extract special token embeddings
+                    embs_result = self.processor.extract_special_token_embeddings_per_schema(
+                        token_embeddings.unsqueeze(0),
+                        input_ids[i:i + 1, :seq_len],
+                        record["mapped_indices"][:seq_len],
+                        num_hierarchical_schemas=len(record["schema_tokens_list"])
+                    )
+
+                    result = BatchEncodingResult(
+                        token_embeddings=embs_result["token_embeddings"],
+                        original_lengths=[seq_len],
+                        mapped_indices=[record["mapped_indices"]],
+                        transformed_data=[record["transformed"]],
+                        batch_indices=[batch_start + i]
+                    )
+
+                    # Store additional needed data
+                    result.embs_per_schema = embs_result["embs_per_schema"]
+                    result.full_inputs = record
+
+                    all_results.append(result)
+
+        return all_results
+
+    def _extract_from_encoding(
+            self,
+            encoding: BatchEncodingResult,
+            schema_dict: Dict[str, Any],
+            threshold: float,
+            field_metadata: Dict[str, Dict],
+            entity_metadata: Dict[str, Dict],
+            field_orders: Dict[str, List[str]],
+            entity_order: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Extract information from pre-encoded representation.
+
+        This runs the task-specific layers (classification, span detection, etc.)
+        on a single encoded text.
+        """
+        # Reconstruct outputs structure
+        outputs = {
+            "text_tokens": encoding.transformed_data[0]["text_tokens"],
+            "token_embeddings": encoding.token_embeddings,
+            "embs_per_schema": encoding.embs_per_schema,
+            "schema_tokens_list": encoding.transformed_data[0]["schema_tokens_list"],
+            "task_types": encoding.transformed_data[0]["task_types"],
+            "outputs": encoding.transformed_data[0]["outputs"],
+            "start_token_idx_to_text_idx": encoding.transformed_data[0].get("start_token_idx_to_text_idx", []),
+            "end_token_idx_to_text_idx": encoding.transformed_data[0].get("end_token_idx_to_text_idx", [])
+        }
+
+        # Compute span representations
+        span_info = self.compute_span_rep(encoding.token_embeddings)
+
+        # Build classification field mapping
+        classification_fields = self._build_classification_map(schema_dict)
+
+        # Extract results using existing logic
+        results = {}
+        record = {"text": encoding.full_inputs["text"], "schema": schema_dict}
+
+        for i, schema_tokens in enumerate(outputs["schema_tokens_list"]):
+            if len(schema_tokens) < 4:
+                continue
+
+            schema_name = self._get_schema_name(schema_tokens)
+            task_type = outputs["task_types"][i]
+
+            if task_type == "classifications":
+                self._extract_classification(
+                    results, schema_name, schema_dict,
+                    outputs["embs_per_schema"][i], schema_tokens
+                )
+            else:
+                self._extract_spans(
+                    results, schema_name, i, outputs, span_info, record,
+                    threshold, field_metadata, entity_metadata,
+                    field_orders, entity_order, classification_fields
+                )
+
+        return results
+
+    @torch.no_grad()
+    def batch_extract(
+            self,
+            texts: List[str],
+            schemas: Union[Schema, List[Schema], Dict[str, Any], List[Dict[str, Any]]],
+            batch_size: int = 8,
+            threshold: float = 0.5,
+            format_results: bool = True,
+            include_confidence: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract information from multiple texts efficiently using batched encoding.
+
+        This method processes multiple texts through the encoder in batches,
+        then runs task-specific extraction individually. This provides significant
+        speedup compared to processing texts one by one.
+
+        Parameters
+        ----------
+        texts : List[str]
+            List of input texts to process. Empty texts are handled gracefully.
+        schemas : Schema, List[Schema], Dict, or List[Dict]
+            Either:
+            - A single schema for all texts
+            - A list of schemas (one per text)
+            - A raw schema dict for all texts
+            - A list of schema dicts (one per text)
+        batch_size : int, default=8
+            Number of texts to encode together. Larger values use more memory
+            but may be faster. Adjust based on your hardware.
+        threshold : float, default=0.5
+            Minimum confidence score (0-1) for accepting extracted spans.
+        format_results : bool, default=True
+            If True, returns clean, formatted results.
+            If False, returns raw results with full details.
+        include_confidence : bool, default=False
+            If True, includes confidence scores in formatted output.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of extraction results, one per input text, in the same order.
+
+        Examples
+        --------
+        >>> # Batch entity extraction
+        >>> texts = ["Apple released iPhone.", "Google announced Pixel.", "Microsoft unveiled Surface."]
+        >>> results = extractor.batch_extract(
+        ...     texts,
+        ...     extractor.create_schema().entities(["company", "product"]),
+        ...     batch_size=8
+        ... )
+
+        >>> # Different schemas per text
+        >>> schemas = [
+        ...     extractor.create_schema().entities(["person", "location"]),
+        ...     extractor.create_schema().entities(["company", "product"]),
+        ...     extractor.create_schema().classification("sentiment", ["positive", "negative"])
+        ... ]
+        >>> results = extractor.batch_extract(texts, schemas)
+
+        >>> # High-throughput processing
+        >>> large_texts = ["..."] * 1000  # 1000 texts
+        >>> results = extractor.batch_extract(
+        ...     large_texts,
+        ...     schema,
+        ...     batch_size=32  # Larger batch for better GPU utilization
+        ... )
+
+        Notes
+        -----
+        - Empty texts return empty results
+        - Failed extractions return empty results (not None)
+        - Results maintain the same order as input texts
+        - Batch size affects memory usage and speed
+        - For very long texts, consider smaller batch sizes
+        """
+        if not texts:
+            return []
+
+        # Ensure we're in eval mode
+        self.eval()
+        self.processor.change_mode(is_training=False)
+
+        # Handle schema input variations
+        if isinstance(schemas, list):
+            if len(schemas) != len(texts):
+                raise ValueError(f"Number of schemas ({len(schemas)}) must match number of texts ({len(texts)})")
+            schema_list = schemas
+        else:
+            # Single schema for all texts
+            schema_list = [schemas] * len(texts)
+
+        # Process schemas and prepare records
+        prepared_records = []
+        schema_metadata = []
+
+        for i, (text, schema) in enumerate(zip(texts, schema_list)):
+            # Clean up text
+            if not text:
+                text = "."
+            elif not text.endswith(('.', '!', '?')):
+                text += "."
+
+            # Handle different schema types
+            if hasattr(schema, 'schema') and hasattr(schema, '_auto_finish'):
+                # This is a StructureBuilder
+                schema._auto_finish()
+                schema = schema.schema
+
+            # Extract schema information
+            if isinstance(schema, Schema):
+                schema_dict = schema.build()
+                metadata = {
+                    "field_metadata": schema._field_metadata,
+                    "entity_metadata": schema._entity_metadata,
+                    "field_orders": schema._field_orders,
+                    "entity_order": schema._entity_order
+                }
+            elif isinstance(schema, dict):
+                schema_dict = schema
+                metadata = {
+                    "field_metadata": {},
+                    "entity_metadata": {},
+                    "field_orders": {},
+                    "entity_order": []
+                }
+            else:
+                raise ValueError(f"Invalid schema type at index {i}")
+
+            # Check cache
+            schema_hash = self._get_schema_hash(schema_dict)
+
+            # Prepare schema
+            self._prepare_schema(schema_dict)
+
+            # Create record
+            record = {"text": text, "schema": schema_dict}
+
+            # Transform record
+            try:
+                transformed = self.processor.transform_single_record(record)
+
+                # Format input
+                format_result = self.processor.format_input_with_mapping(
+                    transformed["schema_tokens_list"],
+                    transformed["text_tokens"]
+                )
+
+                prepared = {
+                    "text": text,
+                    "schema": schema_dict,
+                    "schema_hash": schema_hash,
+                    "transformed": transformed,
+                    "inputs": format_result["inputs"],
+                    "mapped_indices": format_result["mapped_indices"],
+                    "subword_list": format_result["subword_list"],
+                    "schema_tokens_list": transformed["schema_tokens_list"],
+                    "batch_index": i
+                }
+
+                prepared_records.append(prepared)
+                schema_metadata.append(metadata)
+
+            except Exception as e:
+                # Handle transformation errors gracefully
+                print(f"Warning: Failed to process text at index {i}: {str(e)}")
+                prepared_records.append(None)
+                schema_metadata.append(None)
+
+        # Batch encode all valid records
+        valid_records = [r for r in prepared_records if r is not None]
+        if not valid_records:
+            return [{}] * len(texts)
+
+        encoded_results = self._batch_encode(valid_records, batch_size)
+
+        # Map encoded results back to original indices
+        encoded_by_index = {}
+        for enc in encoded_results:
+            encoded_by_index[enc.batch_indices[0]] = enc
+
+        # Extract from each encoding
+        final_results = []
+
+        for i, (record, metadata) in enumerate(zip(prepared_records, schema_metadata)):
+            if record is None or i not in encoded_by_index:
+                final_results.append({})
+                continue
+
+            try:
+                encoding = encoded_by_index[i]
+
+                # Extract using task-specific layers
+                raw_results = self._extract_from_encoding(
+                    encoding,
+                    record["schema"],
+                    threshold,
+                    metadata["field_metadata"],
+                    metadata["entity_metadata"],
+                    metadata["field_orders"],
+                    metadata["entity_order"]
+                )
+
+                # Format if requested
+                if format_results:
+                    results = self.format_results(raw_results, include_confidence)
+                else:
+                    results = raw_results
+
+                final_results.append(results)
+
+            except Exception as e:
+                print(f"Warning: Extraction failed for text at index {i}: {str(e)}")
+                final_results.append({})
+
+        return final_results
+
+    # Batch convenience methods
+    def batch_extract_entities(
+            self,
+            texts: List[str],
+            entity_types: Union[List[str], Dict[str, Union[str, Dict]]],
+            batch_size: int = 8,
+            threshold: float = 0.5,
+            format_results: bool = True,
+            include_confidence: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Batch entity extraction without explicit schema building.
+
+        This is a convenience method for batch processing entity extraction tasks.
+        Internally creates schemas with only entity extraction.
+
+        Parameters
+        ----------
+        texts : List[str]
+            List of texts to extract entities from.
+        entity_types : List[str] or Dict
+            Entity types to extract (see entities for format details).
+        batch_size : int, default=8
+            Number of texts to process together.
+        threshold : float, default=0.5
+            Minimum confidence threshold for entity extraction.
+        format_results : bool, default=True
+            Whether to format the results nicely.
+        include_confidence : bool, default=False
+            Whether to include confidence scores.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of dictionaries with "entities" key containing extracted entities.
+
+        Examples
+        --------
+        >>> texts = [
+        ...     "Apple CEO Tim Cook announced new products.",
+        ...     "Google's Sundar Pichai spoke at the conference.",
+        ...     "Microsoft's Satya Nadella revealed Surface Pro."
+        ... ]
+        >>> results = extractor.batch_extract_entities(
+        ...     texts,
+        ...     ["company", "person", "product"],
+        ...     batch_size=8
+        ... )
+        >>> # Returns: [
+        >>> #     {'entities': {'company': ['Apple'], 'person': ['Tim Cook']}},
+        >>> #     {'entities': {'company': ['Google'], 'person': ['Sundar Pichai']}},
+        >>> #     {'entities': {'company': ['Microsoft'], 'person': ['Satya Nadella'], 'product': ['Surface Pro']}}
+        >>> # ]
+        """
+        schema = self.create_schema().entities(entity_types)
+        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence)
+
+    def batch_classify_text(
+            self,
+            texts: List[str],
+            tasks: Dict[str, Union[List[str], Dict[str, Any]]],
+            batch_size: int = 8,
+            threshold: float = 0.5,
+            format_results: bool = True,
+            include_confidence: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Batch text classification without explicit schema building.
+
+        This is a convenience method for batch classification tasks.
+
+        Parameters
+        ----------
+        texts : List[str]
+            List of texts to classify.
+        tasks : Dict[str, Union[List[str], Dict[str, Any]]]
+            Classification tasks (see classify_text for format details).
+        batch_size : int, default=8
+            Number of texts to process together.
+        threshold : float, default=0.5
+            Confidence threshold.
+        format_results : bool, default=True
+            Whether to format the results nicely.
+        include_confidence : bool, default=False
+            Whether to include confidence scores.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of classification results keyed by task name.
+
+        Examples
+        --------
+        >>> texts = [
+        ...     "This product is amazing! Best purchase ever.",
+        ...     "Terrible experience, would not recommend.",
+        ...     "It's okay, nothing special."
+        ... ]
+        >>> results = extractor.batch_classify_text(
+        ...     texts,
+        ...     {"sentiment": ["positive", "negative", "neutral"]},
+        ...     batch_size=8
+        ... )
+        >>> # Returns: [
+        >>> #     {'sentiment': 'positive'},
+        >>> #     {'sentiment': 'negative'},
+        >>> #     {'sentiment': 'neutral'}
+        >>> # ]
+        """
+        schema = self.create_schema()
+
+        for task_name, task_config in tasks.items():
+            if isinstance(task_config, (list, dict)) and "labels" not in task_config:
+                schema.classification(task_name, task_config)
+            elif isinstance(task_config, dict) and "labels" in task_config:
+                config_copy = task_config.copy()
+                labels = config_copy.pop("labels")
+                schema.classification(task_name, labels, **config_copy)
+            else:
+                raise ValueError(f"Invalid task config for {task_name}")
+
+        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence)
+
+    def batch_extract_json(
+            self,
+            texts: List[str],
+            structures: Dict[str, List[str]],
+            batch_size: int = 8,
+            threshold: float = 0.5,
+            format_results: bool = True,
+            include_confidence: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Batch structured data extraction without explicit schema building.
+
+        This is a convenience method for batch extracting structured data.
+
+        Parameters
+        ----------
+        texts : List[str]
+            List of texts to extract structured data from.
+        structures : Dict[str, List[str]]
+            Structure definitions (see extract_json for format details).
+        batch_size : int, default=8
+            Number of texts to process together.
+        threshold : float, default=0.5
+            Minimum confidence threshold for extraction.
+        format_results : bool, default=True
+            Whether to format the results nicely.
+        include_confidence : bool, default=False
+            Whether to include confidence scores.
+
+        Returns
+        -------
+        List[Dict[str, List[Dict]]]
+            List of extracted structures keyed by structure name.
+
+        Examples
+        --------
+        >>> texts = [
+        ...     "iPhone 15 costs $999 with 256GB storage.",
+        ...     "Galaxy S24 priced at $899 with 512GB.",
+        ...     "Pixel 8 available for $699 with 128GB."
+        ... ]
+        >>> results = extractor.batch_extract_json(
+        ...     texts,
+        ...     {
+        ...         "product": [
+        ...             "name::str",
+        ...             "price::str",
+        ...             "storage::str::Storage capacity"
+        ...         ]
+        ...     },
+        ...     batch_size=8
+        ... )
+        >>> # Returns: [
+        >>> #     {'product': [{'name': 'iPhone 15', 'price': '$999', 'storage': '256GB'}]},
+        >>> #     {'product': [{'name': 'Galaxy S24', 'price': '$899', 'storage': '512GB'}]},
+        >>> #     {'product': [{'name': 'Pixel 8', 'price': '$699', 'storage': '128GB'}]}
+        >>> # ]
+        """
+        schema = self.create_schema()
+
+        for parent, fields in structures.items():
+            builder = schema.structure(parent)
+
+            for field_spec in fields:
+                name, dtype, choices, description = self._parse_field_spec(field_spec)
+                builder.field(name, dtype=dtype, choices=choices, description=description)
+
+        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence)
+
+    # Keep all existing single-text methods unchanged
     @torch.no_grad()
     def extract(
             self,
@@ -778,89 +1169,19 @@ class GLiNER2(Extractor):
             - Entity results: {"entities": [{"person": ["John"], "location": ["NYC"]}]}
             - Classification: {"sentiment": "positive"} or with confidence
             - Structures: {"product": [{"name": "iPhone", "price": "999"}]}
-
-        Examples
-        --------
-        >>> # Basic extraction
-        >>> schema = extractor.create_schema().entities(["person", "location"])
-        >>> results = extractor.extract(
-        ...     "John Smith visited New York yesterday.",
-        ...     schema
-        ... )
-        >>> # {'entities': {'person': ['John Smith'], 'location': ['New York']}}
-
-        >>> # With confidence scores
-        >>> results = extractor.extract(
-        ...     text, schema,
-        ...     include_confidence=True
-        ... )
-        >>> # {'sentiment': {'label': 'positive', 'confidence': 0.95}}
-
-        >>> # High precision mode
-        >>> results = extractor.extract(
-        ...     text, schema,
-        ...     threshold=0.8  # Only very confident extractions
-        ... )
-
-        >>> # Raw results for debugging
-        >>> results = extractor.extract(
-        ...     text, schema,
-        ...     format_results=False  # Get all internal details
-        ... )
-
-        Notes
-        -----
-        - Schema is automatically built if not already done
-        - Empty results are returned as empty lists/dicts, not None
-        - Overlapping spans are resolved using greedy selection
-        - Classification thresholds can be set per-task in the schema
-
-        Raises
-        ------
-        ValueError
-            If the schema is invalid or empty
         """
-        # Clean up text
-        if not text.endswith(('.', '!', '?')):
-            text += "."
-
-        # Handle StructureBuilder case (when only structure was used)
-        if hasattr(schema, 'schema') and hasattr(schema, '_auto_finish'):
-            # This is a StructureBuilder - get the parent Schema
-            schema._auto_finish()  # Finish the structure
-            schema = schema.schema
-
-        # Extract schema information - auto-build if Schema
-        if isinstance(schema, Schema):
-            schema_dict = schema.build()  # This will auto-finish any pending structures
-            field_metadata = schema._field_metadata
-            entity_metadata = schema._entity_metadata
-            field_orders = schema._field_orders
-            entity_order = schema._entity_order
-        elif isinstance(schema, dict):
-            schema_dict = schema
-            field_metadata = {}
-            entity_metadata = {}
-            field_orders = {}
-            entity_order = []
-        else:
-            raise ValueError(
-                "Invalid schema type. Expected Schema or dict, "
-                f"got {type(schema).__name__}. "
-                "Did you forget to call create_schema() first?"
-            )
-
-        # Create record and extract
-        record = {"text": text, "schema": schema_dict}
-        raw_results = self._perform_extraction(
-            record, threshold, field_metadata, entity_metadata, field_orders, entity_order
+        # Use batch_extract with a single text
+        results = self.batch_extract(
+            [text],
+            schema,
+            batch_size=1,
+            threshold=threshold,
+            format_results=format_results,
+            include_confidence=include_confidence
         )
 
-        # Format results if requested
-        if format_results:
-            return self.format_results(raw_results, include_confidence)
-        else:
-            return raw_results
+        # Return the first (and only) result
+        return results[0] if results else {}
 
     def _perform_extraction(
             self,
@@ -884,6 +1205,8 @@ class GLiNER2(Extractor):
 
         # Process through model pipeline
         outputs = self.processor.process_record(self.encoder, record)
+
+        # Compute span representations
         span_info = self.compute_span_rep(outputs["token_embeddings"])
 
         # Extract results
@@ -1368,24 +1691,6 @@ class GLiNER2(Extractor):
         -------
         Dict[str, Any]
             Formatted results with clean structure.
-
-        Examples
-        --------
-        >>> # Format without confidence
-        >>> raw_results = extractor.extract(text, schema, format_results=False)
-        >>> clean = extractor.format_results(raw_results)
-        >>> # {'entities': {'person': ['John Doe'], 'location': ['New York']}}
-
-        >>> # Format with confidence
-        >>> clean = extractor.format_results(raw_results, include_confidence=True)
-        >>> # {'sentiment': {'label': 'positive', 'confidence': 0.95}}
-
-        Notes
-        -----
-        - Removes duplicate values (case-insensitive)
-        - Filters out empty strings and None values
-        - Maintains original field order when possible
-        - Single-value lists are kept as lists (not unwrapped)
         """
         formatted = {}
 
@@ -1464,65 +1769,6 @@ class GLiNER2(Extractor):
                 formatted[field] = None
         return formatted
 
-    def pretty_print_results(self, results: Dict[str, Any], include_confidence: bool = False) -> str:
-        """
-        Convert extraction results to a nicely formatted JSON string.
-
-        This method formats results as indented JSON for easy reading and debugging.
-        Useful for displaying results in logs, console output, or documentation.
-
-        Parameters
-        ----------
-        results : Dict[str, Any]
-            Extraction results (raw or already formatted).
-        include_confidence : bool, default=False
-            Whether to include confidence scores in the output.
-
-        Returns
-        -------
-        str
-            Pretty-printed JSON string with 2-space indentation.
-
-        Examples
-        --------
-        >>> results = extractor.extract_entities(
-        ...     "John works at OpenAI in San Francisco.",
-        ...     ["person", "company", "location"]
-        ... )
-        >>> print(extractor.pretty_print_results(results))
-        {
-          "entities": {
-            "person": [
-              "John"
-            ],
-            "company": [
-              "OpenAI"
-            ],
-            "location": [
-              "San Francisco"
-            ]
-          }
-        }
-
-        >>> # With confidence scores
-        >>> print(extractor.pretty_print_results(results, include_confidence=True))
-        {
-          "sentiment": {
-            "label": "positive",
-            "confidence": 0.92
-          }
-        }
-
-        Notes
-        -----
-        - Uses 2-space indentation for readability
-        - Handles Unicode characters properly (ensure_ascii=False)
-        - Automatically formats results if not already formatted
-        """
-        import json
-        formatted = self.format_results(results, include_confidence)
-        return json.dumps(formatted, indent=2, ensure_ascii=False)
-
     # Convenience methods for common use cases
     def extract_entities(
             self,
@@ -1555,29 +1801,6 @@ class GLiNER2(Extractor):
         -------
         Dict[str, Any]
             Dictionary with "entities" key containing extracted entities.
-
-        Examples
-        --------
-        >>> # Simple entity extraction
-        >>> results = extractor.extract_entities(
-        ...     "Apple Inc. CEO Tim Cook announced new products.",
-        ...     ["company", "person", "product"]
-        ... )
-        >>> # {'entities': {'company': ['Apple Inc.'], 'person': ['Tim Cook']}}
-
-        >>> # With descriptions for better accuracy
-        >>> results = extractor.extract_entities(
-        ...     text,
-        ...     {
-        ...         "medication": "Names of drugs or medications",
-        ...         "dosage": "Dosage amounts like '50mg' or '2 tablets'"
-        ...     }
-        ... )
-
-        See Also
-        --------
-        create_schema : For more complex extraction tasks
-        entities : For detailed entity configuration
         """
         schema = self.create_schema().entities(entity_types)
         return self.extract(text, schema, threshold, format_results, include_confidence)
@@ -1615,56 +1838,18 @@ class GLiNER2(Extractor):
         -------
         Dict[str, Any]
             Classification results keyed by task name.
-
-        Examples
-        --------
-        >>> # Simple classification
-        >>> results = extractor.classify_text(
-        ...     "This product is amazing! Best purchase ever.",
-        ...     {"sentiment": ["positive", "negative", "neutral"]}
-        ... )
-        >>> # {'sentiment': 'positive'}
-
-        >>> # Multi-label classification
-        >>> results = extractor.classify_text(
-        ...     "The new smartphone has great camera but poor battery life.",
-        ...     {
-        ...         "aspects": {
-        ...             "labels": ["camera", "battery", "screen", "performance"],
-        ...             "multi_label": True,
-        ...             "cls_threshold": 0.5
-        ...         }
-        ...     }
-        ... )
-        >>> # {'aspects': ['camera', 'battery']}
-
-        >>> # With confidence scores
-        >>> results = extractor.classify_text(
-        ...     text,
-        ...     {"category": ["tech", "sports", "politics"]},
-        ...     include_confidence=True
-        ... )
-        >>> # {'category': {'label': 'tech', 'confidence': 0.92}}
-
-        See Also
-        --------
-        classification : For more detailed classification configuration
-        create_schema : For combining with other extraction tasks
         """
-        schema = self.create_schema()
+        results = self.batch_classify_text(
+            [text],
+            tasks,
+            batch_size=1,
+            threshold=threshold,
+            format_results=format_results,
+            include_confidence=include_confidence
+        )
 
-        for task_name, task_config in tasks.items():
-            if isinstance(task_config, (list, dict)) and "labels" not in task_config:
-                # Simple format: labels only
-                schema.classification(task_name, task_config)
-            elif isinstance(task_config, dict) and "labels" in task_config:
-                # Full config format
-                labels = task_config.pop("labels")
-                schema.classification(task_name, labels, **task_config)
-            else:
-                raise ValueError(f"Invalid task config for {task_name}")
-
-        return self.extract(text, schema, threshold, format_results, include_confidence)
+        # Return the first (and only) result
+        return results[0] if results else {}
 
     def extract_json(
             self,
@@ -1705,68 +1890,18 @@ class GLiNER2(Extractor):
         Dict[str, List[Dict]]
             Extracted structures keyed by structure name. Each structure
             contains a list of instances found.
-
-        Examples
-        --------
-        >>> # Basic extraction
-        >>> results = extractor.extract_json(
-        ...     "iPhone 15 costs $999. Galaxy S24 is priced at $899.",
-        ...     {
-        ...         "product": [
-        ...             "name::str",
-        ...             "price::Product price"
-        ...         ]
-        ...     }
-        ... )
-
-        >>> # With choices and descriptions
-        >>> results = extractor.extract_json(
-        ...     text,
-        ...     {
-        ...         "reservation": [
-        ...             "guest_name::str::Full name of the guest",
-        ...             "room_type::[single|double|suite]::str::Type of room",
-        ...             "amenities::[wifi|parking|pool|gym]::list::Selected amenities"
-        ...         ]
-        ...     }
-        ... )
-
-        >>> # Mixed specifications
-        >>> results = extractor.extract_json(
-        ...     text,
-        ...     {
-        ...         "task": [
-        ...             "title::str",
-        ...             "description::Detailed task description",
-        ...             "priority::[low|medium|high|urgent]",
-        ...             "tags::[bug|feature|docs|test]::list::Task labels",
-        ...             "assignees::list::People assigned to this task"
-        ...         ]
-        ...     }
-        ... )
-
-        Notes
-        -----
-        - Default type is "list" for regular fields, "str" for choice fields
-        - Choices with ":list" allow multiple selections
-        - Descriptions improve extraction accuracy
-        - Order of specification parts is flexible
-
-        See Also
-        --------
-        structure : For more complex structure definitions
-        create_schema : For combining with other extraction tasks
         """
-        schema = self.create_schema()
+        results = self.batch_extract_json(
+            [text],
+            structures,
+            batch_size=1,
+            threshold=threshold,
+            format_results=format_results,
+            include_confidence=include_confidence
+        )
 
-        for parent, fields in structures.items():
-            builder = schema.structure(parent)
-
-            for field_spec in fields:
-                name, dtype, choices, description = self._parse_field_spec(field_spec)
-                builder.field(name, dtype=dtype, choices=choices, description=description)
-
-        return self.extract(text, schema, threshold, format_results, include_confidence)
+        # Return the first (and only) result
+        return results[0] if results else {}
 
     def _parse_field_spec(self, field_spec: str) -> Tuple[str, str, Optional[List[str]], Optional[str]]:
         """
@@ -1779,67 +1914,12 @@ class GLiNER2(Extractor):
         Parameters
         ----------
         field_spec : str
-            Field specification in various formats:
-            - "field_name" -> (field_name, "list", None, None)
-            - "field_name::description here" -> (field_name, "list", None, "description here")
-            - "field_name::str" -> (field_name, "str", None, None)
-            - "field_name::list" -> (field_name, "list", None, None)
-            - "field_name::[opt1|opt2|opt3]" -> (field_name, "str", [opt1, opt2, opt3], None)
-            - "field_name::[opt1|opt2|opt3]::list" -> (field_name, "list", [opt1, opt2, opt3], None)
-            - "field_name::str::Description text" -> (field_name, "str", None, "Description text")
-            - "field_name::[opt1|opt2]::str::Description" -> (field_name, "str", [opt1, opt2], "Description")
-            - "field_name::[opt1|opt2]::list::Description" -> (field_name, "list", [opt1, opt2], "Description")
+            Field specification in various formats.
 
         Returns
         -------
         Tuple[str, str, Optional[List[str]], Optional[str]]
-            A tuple of (field_name, dtype, choices, description):
-            - field_name: The name of the field
-            - dtype: "str" or "list" (defaults to "list" unless choices without type)
-            - choices: List of valid options, or None
-            - description: Field description, or None
-
-        Examples
-        --------
-        >>> # Simple field
-        >>> _parse_field_spec("address")
-        ('address', 'list', None, None)
-
-        >>> # Field with description only
-        >>> _parse_field_spec("address::Street address: including city and zip")
-        ('address', 'list', None, 'Street address: including city and zip')
-
-        >>> # Typed field
-        >>> _parse_field_spec("email::str")
-        ('email', 'str', None, None)
-
-        >>> # Choice field (defaults to str)
-        >>> _parse_field_spec("status::[active|pending|closed]")
-        ('status', 'str', ['active', 'pending', 'closed'], None)
-
-        >>> # Choice field with explicit list type
-        >>> _parse_field_spec("tags::[python|javascript|java]::list")
-        ('tags', 'list', ['python', 'javascript', 'java'], None)
-
-        >>> # Field with type and description
-        >>> _parse_field_spec("email::str::Contact email: user@example.com")
-        ('email', 'str', None, 'Contact email: user@example.com')
-
-        >>> # Choice field with type and description
-        >>> _parse_field_spec("priority::[low|medium|high]::str::Task priority: importance level")
-        ('priority', 'str', ['low', 'medium', 'high'], 'Task priority: importance level')
-
-        >>> # Multi-select choices with description
-        >>> _parse_field_spec("features::[wifi|parking|pool|gym]::list::Available amenities: select all that apply")
-        ('features', 'list', ['wifi', 'parking', 'pool', 'gym'], 'Available amenities: select all that apply')
-
-        Notes
-        -----
-        - Uses :: as separator to allow descriptions with colons
-        - Default type is "list" for regular fields
-        - Default type is "str" for choice fields (unless explicitly set)
-        - Choices are trimmed of whitespace
-        - Everything after type (or choices if no type) is treated as description
+            A tuple of (field_name, dtype, choices, description).
         """
         # Split by :: but keep at most 3 parts (name, middle, description)
         parts = field_spec.split('::', 2)
