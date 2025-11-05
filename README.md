@@ -25,7 +25,7 @@ pip install gliner2
 from gliner2 import GLiNER2
 
 # Load model once, use everywhere
-extractor = GLiNER2.from_pretrained("fastino/gliner2-base")
+extractor = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
 
 # Extract entities in one line
 text = "Apple CEO Tim Cook announced iPhone 15 in Cupertino yesterday."
@@ -39,8 +39,8 @@ print(result)
 
 | Model | Parameters | Description | Use Case                                         |
 |-------|------------|-------------|--------------------------------------------------|
-| `fastino/gliner2-base-0207` | 205M | base size   | Extraction / classification |
-| `fastino/gliner2-large-1006` | 340M | large size  | Extraction / classification                      |
+| `fastino/gliner2-base-v1` | 205M | base size   | Extraction / classification |
+| `fastino/gliner2-large-v1` | 340M | large size  | Extraction / classification                      |
 
 All models are available on [Hugging Face Hub](https://huggingface.co/fastino) and support the same API.
 
