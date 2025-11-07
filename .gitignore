@@ -1,0 +1,13 @@
+.tool-versions
+gliner2/__init__.py
+gliner2/__pycache__/__init__.cpython-313.pyc
+gliner2/__pycache__/layers.cpython-313.pyc
+gliner2/__pycache__/model.cpython-313.pyc
+gliner2/__pycache__/processor.cpython-313.pyc
+gliner2/inference/__pycache__/__init__.cpython-313.pyc
+gliner2/inference/__pycache__/engine.cpython-313.pyc
+gliner2.egg-info/dependency_links.txt
+gliner2.egg-info/PKG-INFO
+gliner2.egg-info/requires.txt
+gliner2.egg-info/SOURCES.txt
+gliner2.egg-info/top_level.txt
