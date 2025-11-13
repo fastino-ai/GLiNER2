@@ -1737,7 +1737,7 @@ class GLiNER2(Extractor):
 
         return formatted
 
-    def _format_entities(self, entities: Dict[str, Any], include_confidence: bool, include_annotation: bool = Falsel) -> Dict[str, Any]:
+    def _format_entities(self, entities: Dict[str, Any], include_confidence: bool, include_annotation: bool = False) -> Dict[str, Any]:
         """Format entity extraction results."""
         formatted = {}
         for entity_type, spans in entities.items():
