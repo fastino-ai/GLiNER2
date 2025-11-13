@@ -712,7 +712,6 @@ class GLiNER2(Extractor):
                     threshold, field_metadata, entity_metadata,
                     field_orders, entity_order, classification_fields
                 )
-
         return results
 
     @torch.no_grad()
@@ -723,7 +722,8 @@ class GLiNER2(Extractor):
             batch_size: int = 8,
             threshold: float = 0.5,
             format_results: bool = True,
-            include_confidence: bool = False
+            include_confidence: bool = False,
+            include_annotation: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Extract information from multiple texts efficiently using batched encoding.
@@ -921,7 +921,7 @@ class GLiNER2(Extractor):
 
                 # Format if requested
                 if format_results:
-                    results = self.format_results(raw_results, include_confidence)
+                    results = self.format_results(raw_results, include_confidence, include_annotation)
                 else:
                     results = raw_results
 
@@ -1133,7 +1133,8 @@ class GLiNER2(Extractor):
             schema: Union[Schema, Dict[str, Any]],
             threshold: float = 0.5,
             format_results: bool = True,
-            include_confidence: bool = False
+            include_confidence: bool = False,
+            include_annotation: bool = False
     ) -> Dict[str, Any]:
         """
         Extract information from text using a schema.
@@ -1177,7 +1178,8 @@ class GLiNER2(Extractor):
             batch_size=1,
             threshold=threshold,
             format_results=format_results,
-            include_confidence=include_confidence
+            include_confidence=include_confidence,
+            include_annotation=include_annotation
         )
 
         # Return the first (and only) result
@@ -1667,9 +1669,12 @@ class GLiNER2(Extractor):
                 selected.append((text, confidence, start, end))
 
         # Return only the text, maintaining confidence order
-        return [text for text, _, _, _ in selected]
 
-    def format_results(self, results: Dict[str, Any], include_confidence: bool = False) -> Dict[str, Any]:
+        # -- Edit --
+        # return [text for text, _, _, _ in selected]
+        return selected
+
+    def format_results(self, results: Dict[str, Any], include_confidence: bool = False, include_annotation: bool = False) -> Dict[str, Any]:
         """
         Format raw extraction results into clean, user-friendly output.
 
@@ -1700,7 +1705,7 @@ class GLiNER2(Extractor):
                 if isinstance(value[0], dict):
                     if key == "entities":
                         # Format entities specially
-                        formatted[key] = self._format_entities(value[0], include_confidence)
+                        formatted[key] = self._format_entities(value[0], include_confidence, include_annotation)
                     else:
                         # Structures - format each instance
                         formatted[key] = [
@@ -1732,7 +1737,7 @@ class GLiNER2(Extractor):
 
         return formatted
 
-    def _format_entities(self, entities: Dict[str, Any], include_confidence: bool) -> Dict[str, Any]:
+    def _format_entities(self, entities: Dict[str, Any], include_confidence: bool, include_annotation: bool = Falsel) -> Dict[str, Any]:
         """Format entity extraction results."""
         formatted = {}
         for entity_type, spans in entities.items():
@@ -1740,10 +1745,18 @@ class GLiNER2(Extractor):
                 # Remove empty strings and duplicates while preserving order
                 unique_spans = []
                 seen = set()
-                for span in spans:
+                for span_tuple in spans:
+                    span, confidence, start_idx, end_idx = span_tuple
                     if span and span.lower() not in seen:
                         seen.add(span.lower())
-                        unique_spans.append(span)
+                        span_dict = {"value": span}
+                        if include_confidence:
+                            span_dict["confidence"] = confidence
+                            
+                        if include_annotation:
+                            span_dict["start_idx"] = start_idx
+                            span_dict["end_idx"] = end_idx
+                        unique_spans.append(span_dict)
                 formatted[entity_type] = unique_spans
             else:
                 # Single span (str type)
@@ -1776,7 +1789,8 @@ class GLiNER2(Extractor):
             entity_types: Union[List[str], Dict[str, Union[str, Dict]]],
             threshold: float = 0.5,
             format_results: bool = True,
-            include_confidence: bool = False
+            include_confidence: bool = False,
+            include_annotation: bool = False
     ) -> Dict[str, Any]:
         """
         Quick entity extraction without explicit schema building.
@@ -1803,7 +1817,7 @@ class GLiNER2(Extractor):
             Dictionary with "entities" key containing extracted entities.
         """
         schema = self.create_schema().entities(entity_types)
-        return self.extract(text, schema, threshold, format_results, include_confidence)
+        return self.extract(text, schema, threshold, format_results, include_confidence, include_annotation)
 
     def classify_text(
             self,
