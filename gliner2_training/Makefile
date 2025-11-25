@@ -5,11 +5,14 @@ which-python:
 	uv run which python3
 
 create-data:
-	uv run src/create_data.py --split train --out data/train.jsonl --max-rows 10000
-	uv run src/create_data.py --split test --out data/eval.jsonl --max-rows 10000
+	uv run src/create_data.py --split train --out data/train.jsonl --max-rows 1000
+	uv run src/create_data.py --split test --out data/eval.jsonl --max-rows 100
 
 train:
-	uv run src/train.py "fastino/gliner2-base-v1"
+	uv run src/train.py "fastino/gliner2-base-v1" --report-to wandb
+
+train-help:
+	uv run src/train.py --help
 
 predict:
 	uv run src/predict.py "fastino/gliner2-base-v1"
