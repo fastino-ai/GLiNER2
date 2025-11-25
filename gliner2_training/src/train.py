@@ -12,7 +12,10 @@ from gliner2 import GLiNER2
 
 from gliner2.trainer import ExtractorDataset, ExtractorDataCollator, ExtractorTrainer
 
+app = typer.Typer(pretty_exceptions_enable=False)
 
+
+@app.command()
 def main(base_model_id: str):
     print("------------------ gliner2_ft_train_app ------------------")
 
@@ -105,14 +108,10 @@ def main(base_model_id: str):
     trainer.save_state()
     logger.info("Fine-tuning complete.")
 
-    # TODO: Fix eval error
-    # .venv/lib/python3.13/site-packages/transformers/trainer.py:4521 in prediction_step
-    # return_loss = inputs.get("return_loss", None)
-    # AttributeError: 'list' object has no attribute 'get'
-    # self = <gliner2.trainer.ExtractorTrainer object at 0x16e1b9010>
-    # eval_metrics = trainer.evaluate()
-    # logger.info(f"{eval_metrics=}")
+    # 8. Evaluate
+    eval_metrics = trainer.evaluate()
+    logger.info(f"{eval_metrics=}")
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    app()
