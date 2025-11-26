@@ -1,0 +1,23 @@
+[project]
+name = "gliner2-training"
+version = "0.1.0"
+description = "GLiNER2 training library"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "accelerate>=1.12.0",
+    "datasets>=4.4.1",
+    "gliner2",
+    "loguru>=0.7.3",
+    "python-dotenv>=1.2.1",
+    "torch>=2.9.1",
+    "transformers>=4.57.1",
+    "typer>=0.20.0",
+    "wandb>=0.23.0",
+]
+
+[dependency-groups]
+dev = ["black>=25.11.0", "pytest>=9.0.1", "ruff>=0.14.6"]
+
+[tool.uv.sources]
+gliner2 = { path = "../", editable = true }

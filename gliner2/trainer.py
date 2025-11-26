@@ -57,7 +57,12 @@ class ExtractorDataCollator:
     """
 
     def __call__(self, batch):
-        return batch
+        # return batch  # NOTE: main version with evaluation error: "AttributeError: 'list' object has no attribute 'get'"
+
+        # batch is a list of tuples (input, output) from ExtractorDataset
+        # We want to convert it to a list of dicts for the model
+        records = [{"text": x[0], "schema": x[1]} for x in batch]
+        return {"records": records}
 
 
 class ExtractorTrainer(Trainer):
@@ -147,7 +152,10 @@ class ExtractorTrainer(Trainer):
         model.processor.change_mode(is_training=True)
 
         # 1. Pack HF `inputs` -> List[{"text": str, "schema": dict}]
-        batch_records = [{"text": rec[0], "schema": rec[1]} for rec in inputs]
+        # batch_records = [{"text": rec[0], "schema": rec[1]} for rec in inputs]  # NOTE: main version with evaluation error: "AttributeError: 'list' object has no attribute 'get'"
+        
+        # inputs["records"] has the format [{"text": str, "schema": dict}]
+        batch_records = inputs["records"]
 
         # 2. Forward pass in one call
         batch_out = model.forward(

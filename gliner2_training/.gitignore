@@ -1,0 +1,7 @@
+checkpoints/
+checkpoints*/
+data/
+data*/
+_data/
+_data*/
+wandb/
