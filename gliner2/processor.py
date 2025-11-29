@@ -7,6 +7,8 @@ from typing import List
 
 import torch
 from transformers import AutoTokenizer
+from gliner2.infer_packing import InferencePackingConfig, pack_requests, unpack_spans
+from gliner2.packing_utils import apply_pair_attention_encoder, build_position_ids
 
 
 class WhitespaceTokenSplitter:
@@ -1034,7 +1036,14 @@ class SchemaTransformer:
     # BATCH PROCESSING METHODS
     # =====================================================
 
-    def batch_process_records(self, encoder, records: List[Dict[str, Any]]) -> BatchProcessingResult:
+    def batch_process_records(
+            self,
+            encoder,
+            records: List[Dict[str, Any]],
+            *,
+            packing_config: Optional[InferencePackingConfig] = None,
+            encoder_wrapper=None,
+    ) -> BatchProcessingResult:
         """
         Process multiple records in batch for training efficiency.
 
@@ -1113,20 +1122,65 @@ class SchemaTransformer:
                 end_token_mappings=[]
             )
 
-        # Prepare batch tensors
-        batch_input_ids, attention_mask, original_lengths = self._prepare_batch_tensors(formatted_inputs)
-
-        # Single forward pass through encoder
+        # Prepare batch tensors (either padded or packed)
         device = next(encoder.parameters()).device
-        batch_input_ids = batch_input_ids.to(device)
-        attention_mask = attention_mask.to(device)
+        if packing_config is None:
+            batch_input_ids, attention_mask, original_lengths = self._prepare_batch_tensors(formatted_inputs)
+            batch_input_ids = batch_input_ids.to(device)
+            attention_mask = attention_mask.to(device)
 
-        with torch.no_grad() if not self.is_training else torch.enable_grad():
-            outputs = encoder(input_ids=batch_input_ids, attention_mask=attention_mask)
+            with torch.no_grad() if not self.is_training else torch.enable_grad():
+                outputs = encoder(input_ids=batch_input_ids, attention_mask=attention_mask)
+            batch_embeddings = outputs.last_hidden_state
+        else:
+            requests = []
+            original_lengths = []
+            pad_token_id = getattr(self.tokenizer, "pad_token_id", 0)
+            for inp in formatted_inputs:
+                seq_len = inp["inputs"]["input_ids"].shape[1]
+                tokens = inp["inputs"]["input_ids"][0][:seq_len].tolist()
+                requests.append({"input_ids": tokens})
+                original_lengths.append(seq_len)
+
+            packed = pack_requests(requests, packing_config, pad_token_id)
+            packed_ids = packed.input_ids.to(device=device)
+            pair_mask = packed.pair_attention_mask.to(device=device)
+            fallback_mask = packed.attention_mask.to(device=device)
+            position_ids = build_position_ids(packed).to(device=device)
+
+            with torch.no_grad() if not self.is_training else torch.enable_grad():
+                if encoder_wrapper is not None:
+                    outputs = encoder_wrapper(
+                        packed_ids,
+                        pair_mask,
+                        fallback_mask,
+                        position_ids=position_ids,
+                    )
+                else:
+                    outputs = apply_pair_attention_encoder(
+                        encoder,
+                        packed_ids,
+                        pair_mask,
+                        fallback_mask,
+                        position_ids=position_ids,
+                    )
+
+            unpacked = unpack_spans(outputs.last_hidden_state, packed)
+            max_len = max((t.size(0) for t in unpacked), default=0)
+            if max_len == 0:
+                batch_embeddings = torch.zeros((len(unpacked), 0, outputs.last_hidden_state.size(-1)), device=device)
+                batch_input_ids = torch.zeros((len(unpacked), 0), device=device, dtype=torch.long)
+            else:
+                batch_embeddings = torch.zeros((len(unpacked), max_len, outputs.last_hidden_state.size(-1)), device=device)
+                batch_input_ids = torch.full((len(unpacked), max_len), pad_token_id, device=device, dtype=torch.long)
+                for i, (emb, req) in enumerate(zip(unpacked, requests)):
+                    seq_len = emb.size(0)
+                    batch_embeddings[i, :seq_len] = emb.to(device)
+                    batch_input_ids[i, :seq_len] = torch.tensor(req["input_ids"], device=device)
 
         # Extract embeddings for each sample
         results = self._extract_batch_embeddings(
-            outputs.last_hidden_state,
+            batch_embeddings,
             batch_input_ids,
             formatted_inputs,
             transformed_records,

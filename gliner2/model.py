@@ -8,6 +8,15 @@ import torch.nn.functional as F
 from gliner.modeling.span_rep import SpanRepLayer
 from gliner2.layers import CountLSTMoE, CountLSTM, create_mlp, CountLSTMv2
 from gliner2.processor import SchemaTransformer
+from gliner2.infer_packing import (
+    InferencePackingConfig,
+    pack_requests,
+    unpack_spans,
+)
+from gliner2.packing_utils import (
+    apply_pair_attention_encoder,
+    build_position_ids,
+)
 from safetensors.torch import save_file, load_file
 from transformers import (
     PretrainedConfig,
@@ -24,7 +33,17 @@ from transformers import (
 class ExtractorConfig(PretrainedConfig):
     model_type = "extractor"
 
-    def __init__(self, model_name="bert-base-uncased", max_width=8, counting_layer="count_lstm", token_pooling="first", **kwargs):
+    def __init__(
+            self,
+            model_name="bert-base-uncased",
+            max_width=8,
+            counting_layer="count_lstm",
+            token_pooling="first",
+            pack_sequences=False,
+            pack_max_length=None,
+            pack_streams_per_batch=1,
+            **kwargs
+    ):
         """
         Configuration for the Extractor model.
 
@@ -33,12 +52,18 @@ class ExtractorConfig(PretrainedConfig):
             max_width (int): Maximum width for span representations.
             counting_layer (str): Type of counting layer to use.
             token_pooling (str): Method for pooling tokens (default: "first").
+            pack_sequences (bool): Enable sequence packing for encoder inputs.
+            pack_max_length (Optional[int]): Max length for packed streams (defaults to encoder limit).
+            pack_streams_per_batch (int): Number of packed streams per batch.
         """
         super().__init__(**kwargs)
         self.model_name = model_name
         self.max_width = max_width
         self.counting_layer = counting_layer
         self.token_pooling = token_pooling
+        self.pack_sequences = pack_sequences
+        self.pack_max_length = pack_max_length
+        self.pack_streams_per_batch = pack_streams_per_batch
 
 # ---------------------------
 # Extractor Model
@@ -64,6 +89,7 @@ class Extractor(PreTrainedModel):
             self.processor = SchemaTransformer(tokenizer=tokenizer, token_pooling=config.token_pooling)
         else:
             self.processor = SchemaTransformer(config.model_name, token_pooling=config.token_pooling)
+        self._inference_packing_config: Optional[InferencePackingConfig] = None
 
         # Load the encoder model.
         if encoder_config is not None:
@@ -120,6 +146,108 @@ class Extractor(PreTrainedModel):
         print(f"Counting layer     : {config.counting_layer}")
         print(f"Token pooling      : {config.token_pooling}")
         print("=" * 60)
+
+    # ---------------------------
+    # Packing Helpers
+    # ---------------------------
+    def configure_inference_packing(self, config: Optional[InferencePackingConfig]) -> None:
+        """
+        Configure default packing behaviour for inference calls.
+
+        Passing ``None`` disables packing by default. Individual inference
+        methods can override via a packing_config argument.
+        """
+
+        self._inference_packing_config = config
+
+    def _build_packing_config(self, override: Optional[InferencePackingConfig] = None) -> Optional[InferencePackingConfig]:
+        if override is not None:
+            return override
+        if self._inference_packing_config is not None:
+            return self._inference_packing_config
+        if not getattr(self.config, "pack_sequences", False):
+            return None
+
+        max_len = self.config.pack_max_length
+        if max_len is None:
+            max_len = getattr(self.encoder.config, "max_position_embeddings", None)
+        if max_len is None:
+            return None
+
+        sep_id = getattr(self.processor.tokenizer, "sep_token_id", None)
+        if sep_id is None:
+            sep_id = getattr(self.processor.tokenizer, "eos_token_id", None)
+
+        return InferencePackingConfig(
+            max_length=int(max_len),
+            sep_token_id=sep_id,
+            streams_per_batch=getattr(self.config, "pack_streams_per_batch", 1),
+        )
+
+    def _encode_with_optional_packing(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor,
+            packing_config: Optional[InferencePackingConfig] = None,
+            **kwargs,
+    ):
+        """
+        Run the encoder with optional packing. Returns an object exposing
+        .last_hidden_state, mirroring Hugging Face outputs.
+        """
+        if packing_config is None:
+            return self.encoder(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+
+        lengths = attention_mask.sum(dim=-1).tolist()
+        seq_len = int(input_ids.size(1))
+        if not lengths or all(int(l) == seq_len for l in lengths):
+            return self.encoder(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+
+        requests = []
+        for row, length in zip(input_ids, lengths):
+            length = int(length)
+            if length <= 0:
+                requests.append({"input_ids": []})
+            else:
+                requests.append({"input_ids": row[:length].tolist()})
+
+        pad_token_id = getattr(self.encoder.config, "pad_token_id", None)
+        if pad_token_id is None:
+            pad_token_id = getattr(self.processor.tokenizer, "pad_token_id", 0)
+
+        packed = pack_requests(requests, packing_config, pad_token_id)
+
+        device = input_ids.device
+        packed_ids = packed.input_ids.to(device=device)
+        pair_mask = packed.pair_attention_mask.to(device=device)
+        fallback_mask = packed.attention_mask.to(device=device)
+        position_ids = build_position_ids(packed)
+
+        outputs = apply_pair_attention_encoder(
+            self.encoder,
+            packed_ids,
+            pair_mask,
+            fallback_mask,
+            position_ids=position_ids,
+            **kwargs,
+        )
+
+        unpacked: List[torch.Tensor] = unpack_spans(outputs.last_hidden_state, packed)
+        hidden_size = outputs.last_hidden_state.size(-1)
+        batch, seq = input_ids.size()
+        padded_out = outputs.last_hidden_state.new_zeros(batch, seq, hidden_size)
+        for idx, target in enumerate(unpacked):
+            tgt_len = int(target.size(0))
+            if tgt_len == 0:
+                continue
+            end = min(tgt_len, seq)
+            padded_out[idx, :end] = target[:end]
+
+        class _Result:
+            def __init__(self, last_hidden_state):
+                self.last_hidden_state = last_hidden_state
+
+        return _Result(padded_out)
 
     # ---------------------------
     # Original Methods
@@ -311,7 +439,13 @@ class Extractor(PreTrainedModel):
             return result
 
         # Batch encode through processor
-        batch_results = self.processor.batch_process_records(self.encoder, records)
+        packing_cfg = self._build_packing_config()
+        batch_results = self.processor.batch_process_records(
+            self.encoder,
+            records,
+            packing_config=packing_cfg,
+            encoder_wrapper=self._apply_pair_attention_encoder,
+        )
 
         # Prepare for loss computation
         all_classification_losses = []
