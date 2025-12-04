@@ -35,6 +35,23 @@ print(result)
 # {'entities': {'company': ['Apple'], 'person': ['Tim Cook'], 'product': ['iPhone 15'], 'location': ['Cupertino']}}
 ```
 
+### 🌐 API Access: GLiNER XL 1B
+
+Our biggest and most powerful model—**GLiNER XL 1B**—is available exclusively via API. No GPU required, no model downloads, just instant access to state-of-the-art extraction. Get your API key at [gliner.pioneer.ai](https://gliner.pioneer.ai).
+
+```python
+from gliner2 import GLiNER2
+
+# Access GLiNER XL 1B via API
+extractor = GLiNER2.from_api()  # Uses PIONEER_API_KEY env variable
+
+result = extractor.extract_entities(
+    "OpenAI CEO Sam Altman announced GPT-5 at their San Francisco headquarters.",
+    ["company", "person", "product", "location"]
+)
+# {'entities': {'company': ['OpenAI'], 'person': ['Sam Altman'], 'product': ['GPT-5'], 'location': ['San Francisco']}}
+```
+
 ## 📦 Available Models
 
 | Model | Parameters | Description | Use Case                                         |

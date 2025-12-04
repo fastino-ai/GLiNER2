@@ -50,12 +50,15 @@ import hashlib
 import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Dict, List, Optional, Union, Tuple, TYPE_CHECKING
 from typing import Pattern, Literal
 
 import torch
 import torch.nn.functional as F
 from gliner2.model import Extractor
+
+if TYPE_CHECKING:
+    from gliner2.api_client import GLiNER2API
 
 
 @dataclass
@@ -589,6 +592,9 @@ class GLiNER2(Extractor):
     >>> # Load pre-trained model
     >>> extractor = GLiNER2.from_pretrained("your-model")
     >>>
+    >>> # Or load from API (no local model needed)
+    >>> extractor = GLiNER2.from_api()
+    >>>
     >>> # Simple entity extraction
     >>> results = extractor.extract_entities(
     ...     "Apple Inc. announced new products in California.",
@@ -621,6 +627,83 @@ class GLiNER2(Extractor):
         self._schema_cache = {}
         # Cache for entity encodings
         self._encoding_cache = {}
+    
+    @classmethod
+    def from_api(
+        cls,
+        api_key: str = None,
+        api_base_url: str = None,
+        timeout: float = 30.0,
+        max_retries: int = 3,
+    ) -> 'GLiNER2API':
+        """
+        Load GLiNER2 from API endpoint instead of local model.
+        
+        This factory method returns an API-based client that provides the same
+        interface as the local model. All inference methods (extract_entities,
+        extract_json, classify_text, etc.) work identically.
+        
+        Parameters
+        ----------
+        api_key : str, optional
+            API authentication key. If not provided, reads from PIONEER_API_KEY
+            environment variable.
+        api_base_url : str, optional
+            Override the default API base URL (https://api.fastino.ai).
+            Can also be set via GLINER2_API_BASE_URL environment variable.
+        timeout : float, default=30.0
+            Request timeout in seconds.
+        max_retries : int, default=3
+            Maximum number of retries for failed requests.
+        
+        Returns
+        -------
+        GLiNER2API
+            API-based client with the same interface as GLiNER2.
+        
+        Raises
+        ------
+        ValueError
+            If no API key is provided and PIONEER_API_KEY is not set.
+        
+        Examples
+        --------
+        >>> # Using environment variable for API key
+        >>> import os
+        >>> os.environ['PIONEER_API_KEY'] = 'your-api-key'
+        >>> extractor = GLiNER2.from_api()
+        >>>
+        >>> # Using explicit API key
+        >>> extractor = GLiNER2.from_api(api_key="your-api-key")
+        >>>
+        >>> # Use exactly like local model
+        >>> results = extractor.extract_entities(
+        ...     "Apple released iPhone 15 in September 2023.",
+        ...     ["company", "product", "date"]
+        ... )
+        
+        Notes
+        -----
+        The API client supports all the same methods as the local model:
+        - extract_entities / batch_extract_entities
+        - extract_json / batch_extract_json
+        - classify_text / batch_classify_text
+        - extract / batch_extract
+        - create_schema
+        
+        The main differences are:
+        - No local GPU/model required
+        - Requires network connectivity and valid API key
+        - Some advanced features (validators, confidence scores) may be limited
+        """
+        from gliner2.api_client import GLiNER2API
+        
+        return GLiNER2API(
+            api_key=api_key,
+            api_base_url=api_base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
 
     def create_schema(self) -> Schema:
         """
@@ -757,7 +840,8 @@ class GLiNER2(Extractor):
             relation_metadata: Dict[str, Dict],
             field_orders: Dict[str, List[str]],
             entity_order: List[str],
-            relation_order: List[str]
+            relation_order: List[str],
+            include_confidence: bool = False
     ) -> Dict[str, Any]:
         """
         Extract information from pre-encoded representation.
@@ -803,7 +887,8 @@ class GLiNER2(Extractor):
                 self._extract_spans(
                     results, schema_name, i, outputs, span_info, record,
                     threshold, field_metadata, entity_metadata, relation_metadata,
-                    field_orders, entity_order, relation_order, classification_fields
+                    field_orders, entity_order, relation_order, classification_fields,
+                    include_confidence=include_confidence
                 )
 
         return results
@@ -1015,7 +1100,8 @@ class GLiNER2(Extractor):
                     metadata.get("relation_metadata", {}),
                     metadata["field_orders"],
                     metadata["entity_order"],
-                    metadata.get("relation_order", [])
+                    metadata.get("relation_order", []),
+                    include_confidence=include_confidence
                 )
 
                 # Format if requested
@@ -1301,7 +1387,8 @@ class GLiNER2(Extractor):
             field_metadata: Dict[str, Dict],
             entity_metadata: Dict[str, Dict],
             field_orders: Dict[str, List[str]],
-            entity_order: List[str]
+            entity_order: List[str],
+            include_confidence: bool = False
     ) -> Dict[str, Any]:
         """Core extraction pipeline."""
         # Setup model
@@ -1338,7 +1425,8 @@ class GLiNER2(Extractor):
                 self._extract_spans(
                     results, schema_name, i, outputs, span_info, record,
                     default_threshold, field_metadata, entity_metadata, {},
-                    field_orders, entity_order, [], classification_fields
+                    field_orders, entity_order, [], classification_fields,
+                    include_confidence=include_confidence
                 )
 
         return results
@@ -1437,7 +1525,8 @@ class GLiNER2(Extractor):
             field_orders: Dict[str, List[str]],
             entity_order: List[str],
             relation_order: List[str],
-            classification_fields: Dict[str, List[str]]
+            classification_fields: Dict[str, List[str]],
+            include_confidence: bool = False
     ):
         """Extract span-based results (entities, structures, relations)."""
         # Get basic information
@@ -1468,7 +1557,8 @@ class GLiNER2(Extractor):
         if schema_name == "entities":
             extracted_results = self._extract_entity_results(
                 field_names, span_scores, record, outputs,
-                default_threshold, entity_metadata, entity_order
+                default_threshold, entity_metadata, entity_order,
+                include_confidence=include_confidence
             )
             results[schema_name] = extracted_results
         elif outputs["task_types"][schema_idx] == "relations":
@@ -1482,7 +1572,8 @@ class GLiNER2(Extractor):
         else:
             results[schema_name] = self._extract_structure_results(
                 schema_name, field_names, span_scores, count, record, outputs,
-                default_threshold, field_metadata, field_orders, classification_fields
+                default_threshold, field_metadata, field_orders, classification_fields,
+                include_confidence=include_confidence
             )
 
     def _get_field_names(self, schema_tokens: List[str]) -> List[str]:
@@ -1521,7 +1612,8 @@ class GLiNER2(Extractor):
             outputs: Dict,
             default_threshold: float,
             entity_metadata: Dict,
-            entity_order: List[str]
+            entity_order: List[str],
+            include_confidence: bool = False
     ) -> List[Dict[str, Any]]:
         """Extract entity results with per-entity thresholds and preserved order."""
         if span_scores is None:
@@ -1555,9 +1647,12 @@ class GLiNER2(Extractor):
 
             # Format results
             if dtype == "list":
-                entity_results[entity_name] = self._format_span_list(spans)
+                entity_results[entity_name] = self._format_span_list(spans, include_confidence)
             else:  # "str"
-                entity_results[entity_name] = spans[0][0] if spans else ""
+                if include_confidence and spans:
+                    entity_results[entity_name] = spans[0]  # Full tuple
+                else:
+                    entity_results[entity_name] = spans[0][0] if spans else ""
 
         return [entity_results] if entity_results else []
 
@@ -1572,7 +1667,8 @@ class GLiNER2(Extractor):
             default_threshold: float,
             field_metadata: Dict,
             field_orders: Dict[str, List[str]],
-            classification_fields: Dict[str, List[str]]
+            classification_fields: Dict[str, List[str]],
+            include_confidence: bool = False
     ) -> List[Dict[str, Any]]:
         """Extract structured data results with per-field thresholds and preserved order."""
         if span_scores is None:
@@ -1680,9 +1776,12 @@ class GLiNER2(Extractor):
                     # Format and store results
                     if spans:
                         if dtype == "list":
-                            instance_data[field_name] = self._format_span_list(spans)
+                            instance_data[field_name] = self._format_span_list(spans, include_confidence)
                         else:  # "str"
-                            instance_data[field_name] = spans[0][0]
+                            if include_confidence:
+                                instance_data[field_name] = spans[0]  # Full tuple
+                            else:
+                                instance_data[field_name] = spans[0][0]
                     else:
                         # Set None for str fields, empty list for list fields
                         if dtype == "list":
@@ -1834,8 +1933,26 @@ class GLiNER2(Extractor):
 
         return spans
 
-    def _format_span_list(self, spans: List[Tuple[str, float, int, int]]) -> List[str]:
-        """Format spans into a clean list with proper overlap detection and greedy selection."""
+    def _format_span_list(
+        self, 
+        spans: List[Tuple[str, float, int, int]], 
+        include_confidence: bool = False
+    ) -> Union[List[str], List[Tuple[str, float, int, int]]]:
+        """Format spans into a clean list with proper overlap detection and greedy selection.
+        
+        Parameters
+        ----------
+        spans : List[Tuple[str, float, int, int]]
+            List of (text, confidence, start, end) tuples.
+        include_confidence : bool, default=False
+            If True, returns full tuples with confidence and positions.
+            If False, returns only text strings.
+            
+        Returns
+        -------
+        Union[List[str], List[Tuple[str, float, int, int]]]
+            List of text strings (default) or full tuples if include_confidence=True.
+        """
         if not spans:
             return []
 
@@ -1857,7 +1974,9 @@ class GLiNER2(Extractor):
             if not overlap:
                 selected.append((text, confidence, start, end))
 
-        # Return only the text, maintaining confidence order
+        # Return full tuples if confidence requested, otherwise just text
+        if include_confidence:
+            return selected
         return [text for text, _, _, _ in selected]
 
     def format_results(
@@ -1978,10 +2097,28 @@ class GLiNER2(Extractor):
                 unique_spans = []
                 seen = set()
                 for span in spans:
-                    if span and span.lower() not in seen:
-                        seen.add(span.lower())
-                        unique_spans.append(span)
+                    # Handle both tuple format (text, conf, start, end) and plain string
+                    if isinstance(span, tuple):
+                        text, conf, start, end = span
+                        if text and text.lower() not in seen:
+                            seen.add(text.lower())
+                            if include_confidence:
+                                unique_spans.append({"text": text, "confidence": conf, "start": start, "end": end})
+                            else:
+                                unique_spans.append(text)
+                    else:
+                        # Plain string
+                        if span and span.lower() not in seen:
+                            seen.add(span.lower())
+                            unique_spans.append(span)
                 formatted[entity_type] = unique_spans
+            elif isinstance(spans, tuple):
+                # Single span with confidence (str type with include_confidence=True)
+                text, conf, start, end = spans
+                if include_confidence:
+                    formatted[entity_type] = {"text": text, "confidence": conf, "start": start, "end": end} if text else None
+                else:
+                    formatted[entity_type] = text if text else None
             else:
                 # Single span (str type)
                 formatted[entity_type] = spans if spans else None
@@ -1996,10 +2133,27 @@ class GLiNER2(Extractor):
                 unique_values = []
                 seen = set()
                 for v in value:
-                    if v and v.lower() not in seen:
-                        seen.add(v.lower())
-                        unique_values.append(v)
+                    # Handle both tuple format (text, conf, start, end) and plain string
+                    if isinstance(v, tuple):
+                        text, conf, start, end = v
+                        if text and text.lower() not in seen:
+                            seen.add(text.lower())
+                            if include_confidence:
+                                unique_values.append({"text": text, "confidence": conf, "start": start, "end": end})
+                            else:
+                                unique_values.append(text)
+                    else:
+                        if v and v.lower() not in seen:
+                            seen.add(v.lower())
+                            unique_values.append(v)
                 formatted[field] = unique_values
+            elif isinstance(value, tuple):
+                # Single value with confidence (str type with include_confidence=True)
+                text, conf, start, end = value
+                if include_confidence:
+                    formatted[field] = {"text": text, "confidence": conf, "start": start, "end": end} if text else None
+                else:
+                    formatted[field] = text if text else None
             elif value:  # Non-empty string
                 formatted[field] = value
             else:
