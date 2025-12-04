@@ -150,6 +150,8 @@ class SchemaAPI:
         self._entity_threshold = None
         self._classifications = {}
         self._structures = {}
+        self._relations = None
+        self._relation_threshold = None
         self._active_structure_builder = None
     
     def entities(
@@ -209,6 +211,40 @@ class SchemaAPI:
         self._active_structure_builder = StructureBuilderAPI(self, name)
         return self._active_structure_builder
     
+    def relations(
+        self,
+        relation_types: Union[str, List[str], Dict[str, Union[str, Dict]]],
+        threshold: Optional[float] = None
+    ) -> 'SchemaAPI':
+        """
+        Add relation extraction task.
+        
+        Args:
+            relation_types: Relation types to extract. Can be:
+                - str: Single relation type
+                - List[str]: Multiple relation types  
+                - Dict[str, str]: Relation types with descriptions
+                - Dict[str, Dict]: Relation types with full configuration
+            threshold: Default confidence threshold for relations.
+        
+        Returns:
+            Self for method chaining.
+        """
+        if self._active_structure_builder:
+            self._active_structure_builder._auto_finish()
+            self._active_structure_builder = None
+        
+        # Normalize to list or dict
+        if isinstance(relation_types, str):
+            self._relations = [relation_types]
+        elif isinstance(relation_types, list):
+            self._relations = relation_types
+        elif isinstance(relation_types, dict):
+            self._relations = relation_types
+        
+        self._relation_threshold = threshold
+        return self
+    
     def build(self) -> Dict[str, Any]:
         """Build the schema for API request."""
         if self._active_structure_builder:
@@ -228,6 +264,11 @@ class SchemaAPI:
         
         if self._structures:
             schema["structures"] = self._structures
+        
+        if self._relations is not None:
+            schema["relations"] = self._relations
+            if self._relation_threshold is not None:
+                schema["relation_threshold"] = self._relation_threshold
         
         return schema
 
@@ -685,6 +726,92 @@ class GLiNER2API:
         return result
     
     # -------------------------------------------------------------------------
+    # Relation Extraction Methods
+    # -------------------------------------------------------------------------
+    
+    def extract_relations(
+        self,
+        text: str,
+        relation_types: Union[str, List[str], Dict[str, Union[str, Dict]]],
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Extract relations between entities from text.
+        
+        Args:
+            text: Input text to extract relations from.
+            relation_types: Relation types to extract. Can be:
+                - str: Single relation type
+                - List[str]: Multiple relation types
+                - Dict[str, str]: Relation types with descriptions
+                - Dict[str, Dict]: Relation types with full configuration
+            threshold: Minimum confidence threshold.
+            format_results: Whether to format results. If False, returns raw extraction data.
+            include_confidence: Whether to include confidence scores in results.
+        
+        Returns:
+            Dictionary with "relation_extraction" key containing extracted relations.
+            Relations are grouped by type with tuples (source, target).
+            Format: {"relation_extraction": {"relation_name": [("source", "target"), ...]}}
+        """
+        # Build schema with relations
+        schema = self.create_schema().relations(relation_types).build()
+        
+        result = self._make_request(
+            task="schema",
+            text=text,
+            schema=schema,
+            threshold=threshold,
+            include_confidence=include_confidence,
+            format_results=format_results,
+        )
+        
+        return result
+    
+    def batch_extract_relations(
+        self,
+        texts: List[str],
+        relation_types: Union[str, List[str], Dict[str, Union[str, Dict]]],
+        batch_size: int = 8,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Batch extract relations from multiple texts.
+        
+        Args:
+            texts: List of input texts.
+            relation_types: Relation types to extract.
+            batch_size: Batch size (used by API for optimization).
+            threshold: Minimum confidence threshold.
+            format_results: Whether to format results.
+            include_confidence: Whether to include confidence scores.
+        
+        Returns:
+            List of dictionaries with "relation_extraction" key.
+            Format: [{"relation_extraction": {"relation_name": [("source", "target"), ...]}}]
+        """
+        # Build schema with relations
+        schema = self.create_schema().relations(relation_types).build()
+        
+        result = self._make_request(
+            task="schema",
+            text=texts,
+            schema=schema,
+            threshold=threshold,
+            include_confidence=include_confidence,
+            format_results=format_results,
+        )
+        
+        # Ensure result is a list
+        if isinstance(result, dict):
+            return [result]
+        return result
+    
+    # -------------------------------------------------------------------------
     # General Extraction Methods
     # -------------------------------------------------------------------------
     
@@ -723,9 +850,10 @@ class GLiNER2API:
         has_entities = "entities" in schema_dict
         has_classifications = "classifications" in schema_dict
         has_structures = "structures" in schema_dict
+        has_relations = "relations" in schema_dict
         
         # Use schema task for multi-task extraction
-        if sum([has_entities, has_classifications, has_structures]) > 1:
+        if sum([has_entities, has_classifications, has_structures, has_relations]) > 1:
             return self._make_request(
                 task="schema",
                 text=text,
@@ -735,7 +863,7 @@ class GLiNER2API:
                 format_results=format_results,
             )
         
-        # Single task - use specific endpoint
+        # Single task - use specific endpoint or schema task
         if has_entities:
             return self.extract_entities(
                 text,
@@ -756,6 +884,16 @@ class GLiNER2API:
             return self.extract_json(
                 text,
                 schema_dict["structures"],
+                threshold=threshold,
+                include_confidence=include_confidence,
+                format_results=format_results,
+            )
+        elif has_relations:
+            # Relations use the schema task
+            return self._make_request(
+                task="schema",
+                text=text,
+                schema=schema_dict,
                 threshold=threshold,
                 include_confidence=include_confidence,
                 format_results=format_results,

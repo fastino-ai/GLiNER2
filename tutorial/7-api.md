@@ -8,6 +8,7 @@ Use GLiNER2 through a cloud API without loading models locally. Perfect for prod
 - [Entity Extraction](#entity-extraction)
 - [Text Classification](#text-classification)
 - [Structured Extraction](#structured-extraction)
+- [Relation Extraction](#relation-extraction)
 - [Combined Schemas](#combined-schemas)
 - [Batch Processing](#batch-processing)
 - [Confidence Scores](#confidence-scores)
@@ -208,22 +209,81 @@ results = extractor.extract_json(
 # }
 ```
 
+## Relation Extraction
+
+Extract relationships between entities as directional tuples (source, target).
+
+### Basic Relation Extraction
+
+```python
+extractor = GLiNER2.from_api()
+
+text = "John works for Apple Inc. and lives in San Francisco. Apple Inc. is located in Cupertino."
+results = extractor.extract_relations(
+    text,
+    ["works_for", "lives_in", "located_in"]
+)
+# Output: {
+#     'relation_extraction': {
+#         'works_for': [('John', 'Apple Inc.')],
+#         'lives_in': [('John', 'San Francisco')],
+#         'located_in': [('Apple Inc.', 'Cupertino')]
+#     }
+# }
+```
+
+### With Descriptions
+
+```python
+text = "Elon Musk founded SpaceX in 2002. SpaceX is located in Hawthorne, California."
+
+schema = extractor.create_schema().relations({
+    "founded": "Founding relationship where person created organization",
+    "located_in": "Geographic relationship where entity is in a location"
+})
+
+results = extractor.extract(text, schema)
+# Output: {
+#     'relation_extraction': {
+#         'founded': [('Elon Musk', 'SpaceX')],
+#         'located_in': [('SpaceX', 'Hawthorne, California')]
+#     }
+# }
+```
+
+### Batch Relation Extraction
+
+```python
+texts = [
+    "John works for Microsoft and lives in Seattle.",
+    "Sarah founded TechStartup in 2020.",
+    "Bob reports to Alice at Google."
+]
+
+results = extractor.batch_extract_relations(
+    texts,
+    ["works_for", "founded", "reports_to", "lives_in"]
+)
+# Returns list of relation extraction results for each text
+```
+
 ## Combined Schemas
 
-Combine entities, classification, and structured extraction in a single call.
+Combine entities, classification, relations, and structured extraction in a single call.
 
 ```python
 extractor = GLiNER2.from_api()
 
 text = """
 Tech Review: The new MacBook Pro M3 is absolutely fantastic! Apple has outdone themselves.
-I tested it in San Francisco last week and the performance is incredible.
+I tested it in San Francisco last week. Tim Cook works for Apple, which is located in Cupertino.
 Highly recommended for developers. Rating: 5 out of 5 stars.
 """
 
 schema = (extractor.create_schema()
-    .entities(["company", "product", "location"])
+    .entities(["company", "product", "location", "person"])
     .classification("sentiment", ["positive", "negative", "neutral"])
+    .relations(["works_for", "located_in"])
     .structure("review")
         .field("product_name", dtype="str")
         .field("rating", dtype="str")
@@ -235,9 +295,14 @@ results = extractor.extract(text, schema)
 #     'entities': {
 #         'company': ['Apple'],
 #         'product': ['MacBook Pro M3'],
-#         'location': ['San Francisco']
+#         'location': ['San Francisco', 'Cupertino'],
+#         'person': ['Tim Cook']
 #     },
 #     'sentiment': 'positive',
+#     'relation_extraction': {
+#         'works_for': [('Tim Cook', 'Apple')],
+#         'located_in': [('Apple', 'Cupertino')]
+#     },
 #     'review': [{
 #         'product_name': 'MacBook Pro M3',
 #         'rating': '5 out of 5 stars',
