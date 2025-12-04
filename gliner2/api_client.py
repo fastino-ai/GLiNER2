@@ -371,7 +371,9 @@ class GLiNER2API:
         Raises:
             GLiNER2APIError: If request fails
         """
-        url = urljoin(self.base_url, "/gliner-2")
+        # Ensure base_url ends with / for proper joining
+        base = self.base_url.rstrip('/') + '/'
+        url = urljoin(base, "gliner-2")
         
         payload = {
             "task": task,
