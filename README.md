@@ -449,6 +449,29 @@ result = extractor.extract_json(
 # }
 ```
 
+## ⚡ Accelerating Inference with Sequence Packing
+
+Pack multiple short requests into a single transformer pass with a block-diagonal attention mask to cut padding overhead and boost throughput.
+
+```python
+from gliner2 import GLiNER2, InferencePackingConfig
+
+extractor = GLiNER2.from_pretrained("your-model", map_location="cuda")
+packing_cfg = InferencePackingConfig(
+    max_length=512,
+    sep_token_id=extractor.processor.tokenizer.sep_token_id,
+    streams_per_batch=1,
+)
+
+# Configure once for all subsequent calls (override per call if needed)
+extractor.configure_inference_packing(packing_cfg)
+
+texts = ["Email CEO to approve budget", "Schedule yearly medical checkup"]
+labels = ["person", "organization", "action"]
+
+results = extractor.batch_extract_entities(texts, labels, batch_size=16)
+```
+
 ## 📄 License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.

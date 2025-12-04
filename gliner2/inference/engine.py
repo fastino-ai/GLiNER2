@@ -56,6 +56,8 @@ from typing import Pattern, Literal
 import torch
 import torch.nn.functional as F
 from gliner2.model import Extractor
+from gliner2.infer_packing import InferencePackingConfig, pack_requests, unpack_spans
+from gliner2.packing_utils import apply_pair_attention_encoder, build_position_ids
 
 
 @dataclass
@@ -642,7 +644,8 @@ class GLiNER2(Extractor):
 
     def _prepare_batch_inputs(
             self,
-            input_list: List[Dict[str, Any]]
+            input_list: List[Dict[str, Any]],
+            max_length: Optional[int] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
         """
         Prepare batch inputs with proper padding and attention masks.
@@ -654,20 +657,22 @@ class GLiNER2(Extractor):
             - Attention mask tensor
             - Original sequence lengths
         """
-        # Find max length
-        max_length = max(inp["inputs"]["input_ids"].shape[1] for inp in input_list)
+        # Find max length (optionally capped)
+        max_len = max(inp["inputs"]["input_ids"].shape[1] for inp in input_list)
+        if max_length is not None:
+            max_len = min(max_len, max_length)
 
         # Prepare tensors
         batch_size = len(input_list)
         device = next(self.encoder.parameters()).device
 
         padded_input_ids = torch.zeros(
-            (batch_size, max_length),
+            (batch_size, max_len),
             dtype=torch.long,
             device=device
         )
         attention_mask = torch.zeros(
-            (batch_size, max_length),
+            (batch_size, max_len),
             dtype=torch.long,
             device=device
         )
@@ -675,9 +680,9 @@ class GLiNER2(Extractor):
 
         # Fill tensors
         for i, inp in enumerate(input_list):
-            seq_len = inp["inputs"]["input_ids"].shape[1]
-            padded_input_ids[i, :seq_len] = inp["inputs"]["input_ids"][0]
-            attention_mask[i, :seq_len] = inp["inputs"]["attention_mask"][0]
+            seq_len = min(inp["inputs"]["input_ids"].shape[1], max_len)
+            padded_input_ids[i, :seq_len] = inp["inputs"]["input_ids"][0][:seq_len]
+            attention_mask[i, :seq_len] = inp["inputs"]["attention_mask"][0][:seq_len]
             original_lengths.append(seq_len)
 
         return padded_input_ids, attention_mask, original_lengths
@@ -685,7 +690,8 @@ class GLiNER2(Extractor):
     def _batch_encode(
             self,
             prepared_records: List[Dict[str, Any]],
-            batch_size: int = 8
+            batch_size: int = 8,
+            packing_config: Optional[InferencePackingConfig] = None
     ) -> List[BatchEncodingResult]:
         """
         Batch encode multiple texts through the transformer encoder.
@@ -703,47 +709,102 @@ class GLiNER2(Extractor):
             Encoded representations for each input text
         """
         all_results = []
+        active_packing = self._build_packing_config(packing_config)
+
+        max_cap = None
+        if active_packing is not None:
+            max_cap = active_packing.max_length
+        else:
+            max_cap = getattr(self.encoder.config, "max_position_embeddings", None)
 
         with torch.no_grad():
             for batch_start in range(0, len(prepared_records), batch_size):
                 batch_end = min(batch_start + batch_size, len(prepared_records))
                 batch = prepared_records[batch_start:batch_end]
+                if active_packing is None:
+                    # Prepare batch inputs
+                    input_ids, attention_mask, lengths = self._prepare_batch_inputs(batch, max_cap)
 
-                # Prepare batch inputs
-                input_ids, attention_mask, lengths = self._prepare_batch_inputs(batch)
-
-                # Forward pass through encoder
-                outputs = self.encoder(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask
-                )
-
-                # Extract embeddings for each item in batch
-                for i, record in enumerate(batch):
-                    seq_len = lengths[i]
-                    token_embeddings = outputs.last_hidden_state[i, :seq_len, :]
-
-                    # Extract special token embeddings
-                    embs_result = self.processor.extract_special_token_embeddings_per_schema(
-                        token_embeddings.unsqueeze(0),
-                        input_ids[i:i + 1, :seq_len],
-                        record["mapped_indices"][:seq_len],
-                        num_hierarchical_schemas=len(record["schema_tokens_list"])
+                    # Forward pass through encoder
+                    outputs = self.encoder(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask
                     )
 
-                    result = BatchEncodingResult(
-                        token_embeddings=embs_result["token_embeddings"],
-                        original_lengths=[seq_len],
-                        mapped_indices=[record["mapped_indices"]],
-                        transformed_data=[record["transformed"]],
-                        batch_indices=[batch_start + i]
+                    # Extract embeddings for each item in batch
+                    for i, record in enumerate(batch):
+                        seq_len = lengths[i]
+                        token_embeddings = outputs.last_hidden_state[i, :seq_len, :]
+
+                        embs_result = self.processor.extract_special_token_embeddings_per_schema(
+                            token_embeddings.unsqueeze(0),
+                            input_ids[i:i + 1, :seq_len],
+                            record["mapped_indices"][:seq_len],
+                            num_hierarchical_schemas=len(record["schema_tokens_list"])
+                        )
+
+                        result = BatchEncodingResult(
+                            token_embeddings=embs_result["token_embeddings"],
+                            original_lengths=[seq_len],
+                            mapped_indices=[record["mapped_indices"]],
+                            transformed_data=[record["transformed"]],
+                            batch_indices=[batch_start + i]
+                        )
+
+                        result.embs_per_schema = embs_result["embs_per_schema"]
+                        result.full_inputs = record
+                        all_results.append(result)
+                else:
+                    requests = []
+                    for record in batch:
+                        seq_len = record["inputs"]["input_ids"].shape[1]
+                        tokens = record["inputs"]["input_ids"][0][:seq_len].tolist()
+                        requests.append({"input_ids": tokens})
+
+                    pad_token_id = getattr(self.processor.tokenizer, "pad_token_id", 0)
+                    packed = pack_requests(requests, active_packing, pad_token_id)
+                    device = next(self.encoder.parameters()).device
+                    packed_ids = packed.input_ids.to(device=device)
+                    pair_mask = packed.pair_attention_mask.to(device=device)
+                    fallback_mask = packed.attention_mask.to(device=device)
+                    position_ids = build_position_ids(packed).to(device=device)
+
+                    outputs = apply_pair_attention_encoder(
+                        self.encoder,
+                        packed_ids,
+                        pair_mask,
+                        fallback_mask,
+                        position_ids=position_ids,
                     )
 
-                    # Store additional needed data
-                    result.embs_per_schema = embs_result["embs_per_schema"]
-                    result.full_inputs = record
+                    unpacked = unpack_spans(outputs.last_hidden_state, packed)
+                    for i, (record, token_embeddings) in enumerate(zip(batch, unpacked)):
+                        target_len = len(record["mapped_indices"])
+                        if token_embeddings.size(0) < target_len:
+                            pad_len = target_len - token_embeddings.size(0)
+                            pad_tensor = token_embeddings.new_zeros(pad_len, token_embeddings.size(-1))
+                            token_embeddings = torch.cat([token_embeddings, pad_tensor], dim=0)
+                        elif token_embeddings.size(0) > target_len:
+                            token_embeddings = token_embeddings[:target_len]
+                        input_tensor = torch.tensor(requests[i]["input_ids"][:target_len], device=device).unsqueeze(0)
+                        embs_result = self.processor.extract_special_token_embeddings_per_schema(
+                            token_embeddings.unsqueeze(0),
+                            input_tensor,
+                            record["mapped_indices"][:target_len],
+                            num_hierarchical_schemas=len(record["schema_tokens_list"])
+                        )
 
-                    all_results.append(result)
+                        result = BatchEncodingResult(
+                            token_embeddings=embs_result["token_embeddings"],
+                            original_lengths=[target_len],
+                            mapped_indices=[record["mapped_indices"]],
+                            transformed_data=[record["transformed"]],
+                            batch_indices=[batch_start + i]
+                        )
+
+                        result.embs_per_schema = embs_result["embs_per_schema"]
+                        result.full_inputs = record
+                        all_results.append(result)
 
         return all_results
 
@@ -816,7 +877,8 @@ class GLiNER2(Extractor):
             batch_size: int = 8,
             threshold: float = 0.5,
             format_results: bool = True,
-            include_confidence: bool = False
+            include_confidence: bool = False,
+            packing_config: Optional[InferencePackingConfig] = None
     ) -> List[Dict[str, Any]]:
         """
         Extract information from multiple texts efficiently using batched encoding.
@@ -845,6 +907,8 @@ class GLiNER2(Extractor):
             If False, returns raw results with full details.
         include_confidence : bool, default=False
             If True, includes confidence scores in formatted output.
+        packing_config : InferencePackingConfig, optional
+            Configuration for sequence packing. If None, uses any model-level default.
 
         Returns
         -------
@@ -987,7 +1051,11 @@ class GLiNER2(Extractor):
         if not valid_records:
             return [{}] * len(texts)
 
-        encoded_results = self._batch_encode(valid_records, batch_size)
+        encoded_results = self._batch_encode(
+            valid_records,
+            batch_size,
+            packing_config=packing_config
+        )
 
         # Map encoded results back to original indices
         encoded_by_index = {}
@@ -1052,7 +1120,8 @@ class GLiNER2(Extractor):
             batch_size: int = 8,
             threshold: float = 0.5,
             format_results: bool = True,
-            include_confidence: bool = False
+            include_confidence: bool = False,
+            packing_config: Optional[InferencePackingConfig] = None
     ) -> List[Dict[str, Any]]:
         """
         Batch entity extraction without explicit schema building.
@@ -1099,7 +1168,7 @@ class GLiNER2(Extractor):
         >>> # ]
         """
         schema = self.create_schema().entities(entity_types)
-        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence)
+        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence, packing_config)
 
     def batch_classify_text(
             self,
@@ -1108,7 +1177,8 @@ class GLiNER2(Extractor):
             batch_size: int = 8,
             threshold: float = 0.5,
             format_results: bool = True,
-            include_confidence: bool = False
+            include_confidence: bool = False,
+            packing_config: Optional[InferencePackingConfig] = None
     ) -> List[Dict[str, Any]]:
         """
         Batch text classification without explicit schema building.
@@ -1165,7 +1235,7 @@ class GLiNER2(Extractor):
             else:
                 raise ValueError(f"Invalid task config for {task_name}")
 
-        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence)
+        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence, packing_config)
 
     def batch_extract_json(
             self,
@@ -1174,7 +1244,8 @@ class GLiNER2(Extractor):
             batch_size: int = 8,
             threshold: float = 0.5,
             format_results: bool = True,
-            include_confidence: bool = False
+            include_confidence: bool = False,
+            packing_config: Optional[InferencePackingConfig] = None
     ) -> List[Dict[str, Any]]:
         """
         Batch structured data extraction without explicit schema building.
@@ -1234,7 +1305,7 @@ class GLiNER2(Extractor):
                 name, dtype, choices, description = self._parse_field_spec(field_spec)
                 builder.field(name, dtype=dtype, choices=choices, description=description)
 
-        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence)
+        return self.batch_extract(texts, schema, batch_size, threshold, format_results, include_confidence, packing_config)
 
     # Keep all existing single-text methods unchanged
     @torch.no_grad()
