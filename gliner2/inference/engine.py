@@ -1857,8 +1857,9 @@ class GLiNER2(Extractor):
             if not overlap:
                 selected.append((text, confidence, start, end))
 
-        # Return only the text, maintaining confidence order
-        return [text for text, _, _, _ in selected]
+        # Return only the text and confidence, maintaining confidence order
+        # TODO return anso start, end and convert them from token to char indices
+        return [(text, confidence) for text, confidence, _, _ in selected]
 
     def format_results(
         self, 
@@ -1974,17 +1975,28 @@ class GLiNER2(Extractor):
         formatted = {}
         for entity_type, spans in entities.items():
             if isinstance(spans, list):
-                # Remove empty strings and duplicates while preserving order
-                unique_spans = []
-                seen = set()
-                for span in spans:
-                    if span and span.lower() not in seen:
-                        seen.add(span.lower())
-                        unique_spans.append(span)
-                formatted[entity_type] = unique_spans
+                if include_confidence:
+                    unique_spans = dict()
+                    for span, confidence in spans:
+                        if (span not in unique_spans) or (confidence > unique_spans[span]):
+                            unique_spans[span] = confidence
+                    formatted[entity_type] = [(span, confidence) for span, confidence in unique_spans.items()]
+                else:
+                    # Remove empty strings and duplicates while preserving order
+                    unique_spans = []
+                    seen = set()
+                    for span, confidence in spans:
+                        if span and span.lower() not in seen:
+                            seen.add(span.lower())
+                            unique_spans.append(span)
+                    formatted[entity_type] = unique_spans
             else:
-                # Single span (str type)
-                formatted[entity_type] = spans if spans else None
+                if include_confidence:
+                    # Single span with confidence ( tuple(str, float) type )
+                    formatted[entity_type] = spans if spans else None
+                else:
+                    # Single span (str type)
+                    formatted[entity_type] = spans[0] if spans else None
         return formatted
 
     def _format_structure_instance(self, instance: Dict[str, Any], include_confidence: bool) -> Dict[str, Any]:
@@ -1995,7 +2007,7 @@ class GLiNER2(Extractor):
                 # Remove empty strings and duplicates
                 unique_values = []
                 seen = set()
-                for v in value:
+                for v, confidence in value:
                     if v and v.lower() not in seen:
                         seen.add(v.lower())
                         unique_values.append(v)
