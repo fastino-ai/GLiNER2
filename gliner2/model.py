@@ -1,3 +1,10 @@
+"""
+GLiNER2 Extractor Model with Optimized Batch Processing
+
+This module contains the core Extractor model that accepts PreprocessedBatch
+directly for efficient GPU-only forward passes.
+"""
+
 import os
 import tempfile
 from typing import Dict, List, Any, Optional, Tuple
@@ -7,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from gliner.modeling.span_rep import SpanRepLayer
 from gliner2.layers import CountLSTMoE, CountLSTM, create_mlp, CountLSTMv2
-from gliner2.processor import SchemaTransformer
+from gliner2.processor import SchemaTransformer, PreprocessedBatch, SamplingConfig
 from safetensors.torch import save_file, load_file
 from transformers import (
     PretrainedConfig,
@@ -18,70 +25,79 @@ from transformers import (
 )
 
 
-# ---------------------------
-# ExtractorConfig Definition
-# ---------------------------
 class ExtractorConfig(PretrainedConfig):
+    """Configuration for the Extractor model."""
     model_type = "extractor"
 
-    def __init__(self, model_name="bert-base-uncased", max_width=8, counting_layer="count_lstm", token_pooling="first", **kwargs):
-        """
-        Configuration for the Extractor model.
-
-        Args:
-            model_name (str): Pretrained model name for the encoder.
-            max_width (int): Maximum width for span representations.
-            counting_layer (str): Type of counting layer to use.
-            token_pooling (str): Method for pooling tokens (default: "first").
-        """
+    def __init__(
+            self,
+            model_name: str = "bert-base-uncased",
+            max_width: int = 8,
+            counting_layer: str = "count_lstm",
+            token_pooling: str = "first",
+            **kwargs
+    ):
         super().__init__(**kwargs)
         self.model_name = model_name
         self.max_width = max_width
         self.counting_layer = counting_layer
         self.token_pooling = token_pooling
 
-# ---------------------------
-# Extractor Model
-# ---------------------------
+
 class Extractor(PreTrainedModel):
+    """
+    GLiNER2 Extractor Model.
+
+    This model accepts PreprocessedBatch for efficient training.
+    Use processor.collate_fn_train() to create batches.
+
+    Example:
+        >>> processor = SchemaTransformer(model_name)
+        >>> model = Extractor.from_pretrained(repo_id)
+        >>> 
+        >>> # Training
+        >>> loader = DataLoader(dataset, collate_fn=processor.collate_fn_train)
+        >>> for batch in loader:
+        ...     batch = batch.to(device)
+        ...     loss = model(batch)["total_loss"]
+    """
     config_class = ExtractorConfig
 
-    def __init__(self, config, encoder_config=None, tokenizer=None):
-        """
-        Initializes the Extractor model.
-
-        Args:
-            config (ExtractorConfig): Model configuration.
-            encoder_config (Optional[dict or PretrainedConfig]): Configuration for the encoder.
-            tokenizer (Optional[PreTrainedTokenizer]): Tokenizer for the processor.
-        """
+    def __init__(self, config: ExtractorConfig, encoder_config=None, tokenizer=None):
         super().__init__(config)
         self.config = config
         self.max_width = config.max_width
 
-        # Initialize the SchemaTransformer. If a tokenizer is provided, use it.
+        # Initialize processor
         if tokenizer is not None:
-            self.processor = SchemaTransformer(tokenizer=tokenizer, token_pooling=config.token_pooling)
+            self.processor = SchemaTransformer(
+                tokenizer=tokenizer,
+                token_pooling=config.token_pooling
+            )
         else:
-            self.processor = SchemaTransformer(config.model_name, token_pooling=config.token_pooling)
+            self.processor = SchemaTransformer(
+                config.model_name,
+                token_pooling=config.token_pooling
+            )
 
-        # Load the encoder model.
+        # Load encoder
         if encoder_config is not None:
             self.encoder = AutoModel.from_config(encoder_config, trust_remote_code=True)
         else:
             self.encoder = AutoModel.from_pretrained(config.model_name, trust_remote_code=True)
-        # Resize token embeddings using the processor's tokenizer.
+
         self.encoder.resize_token_embeddings(len(self.processor.tokenizer))
         self.hidden_size = self.encoder.config.hidden_size
 
-        # Span representation layer.
+        # Span representation layer
         self.span_rep = SpanRepLayer(
             span_mode="markerV0",
             hidden_size=self.hidden_size,
             max_width=self.max_width,
             dropout=0.1,
         )
-        # Classifier for classification tasks.
+
+        # Classifier for classification tasks
         self.classifier = create_mlp(
             input_dim=self.hidden_size,
             intermediate_dims=[self.hidden_size * 2],
@@ -90,7 +106,8 @@ class Extractor(PreTrainedModel):
             activation="relu",
             add_layer_norm=False
         )
-        # Layers for hierarchical schema count prediction.
+
+        # Count prediction layer
         self.count_pred = create_mlp(
             input_dim=self.hidden_size,
             intermediate_dims=[self.hidden_size * 2],
@@ -99,7 +116,8 @@ class Extractor(PreTrainedModel):
             activation="relu",
             add_layer_norm=False
         )
-        # Count embedding module.
+
+        # Count embedding module
         if config.counting_layer == "count_lstm":
             self.count_embed = CountLSTM(self.hidden_size)
         elif config.counting_layer == "count_lstm_moe":
@@ -112,21 +130,270 @@ class Extractor(PreTrainedModel):
         elif config.counting_layer == "count_lstm_v2":
             self.count_embed = CountLSTMv2(hidden_size=self.hidden_size)
 
-        # print information about the model
+        self._print_config(config)
+
+    def _print_config(self, config):
         print("=" * 60)
-        print("🧠  Model Configuration")
+        print("🧠 Model Configuration")
         print("=" * 60)
         print(f"Encoder model      : {config.model_name}")
         print(f"Counting layer     : {config.counting_layer}")
         print(f"Token pooling      : {config.token_pooling}")
         print("=" * 60)
 
-    # ---------------------------
-    # Original Methods
-    # ---------------------------
-    def compute_span_rep(self, token_embeddings: torch.Tensor) -> dict:
+    # =========================================================================
+    # Main Forward Pass
+    # =========================================================================
+
+    def forward(
+            self,
+            batch: PreprocessedBatch,
+            return_individual_losses: bool = False
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass on preprocessed batch.
+
+        Args:
+            batch: PreprocessedBatch from processor.collate_fn_train()
+            return_individual_losses: If True, return per-sample losses
+
+        Returns:
+            Dict with:
+                - total_loss: Sum of all losses
+                - classification_loss: Classification task loss
+                - structure_loss: Span extraction loss
+                - count_loss: Count prediction loss
+                - batch_size: Number of valid samples
+        """
+        if len(batch) == 0:
+            return self._empty_loss_dict()
+
+        device = next(self.parameters()).device
+        batch = batch.to(device)
+
+        # Encode batch through transformer
+        all_token_embs, all_schema_embs = self._encode_batch(batch)
+
+        # Compute losses for each sample
+        cls_losses = []
+        struct_losses = []
+        count_losses = []
+        individual = []
+        valid_samples = 0
+
+        for i in range(len(batch)):
+            try:
+                sample_losses = self._compute_sample_loss(
+                    token_embeddings=all_token_embs[i],
+                    embs_per_schema=all_schema_embs[i],
+                    task_types=batch.task_types[i],
+                    structure_labels=batch.structure_labels[i],
+                    device=device
+                )
+
+                cls_losses.append(sample_losses["classification"])
+                struct_losses.append(sample_losses["structure"])
+                count_losses.append(sample_losses["count"])
+
+                if return_individual_losses:
+                    individual.append({
+                        "total_loss": (
+                                sample_losses["classification"] +
+                                sample_losses["structure"] +
+                                sample_losses["count"]
+                        ).item(),
+                        "classification_loss": sample_losses["classification"].item(),
+                        "structure_loss": sample_losses["structure"].item(),
+                        "count_loss": sample_losses["count"].item(),
+                    })
+
+                valid_samples += 1
+
+            except Exception as e:
+                print(f"Error processing sample {i}: {e}")
+                zero = torch.tensor(0.0, device=device)
+                cls_losses.append(zero)
+                struct_losses.append(zero)
+                count_losses.append(zero)
+
+                if return_individual_losses:
+                    individual.append({
+                        "total_loss": 0.0,
+                        "classification_loss": 0.0,
+                        "structure_loss": 0.0,
+                        "count_loss": 0.0,
+                        "error": str(e)
+                    })
+
+        if valid_samples == 0:
+            result = self._empty_loss_dict()
+            if return_individual_losses:
+                result["individual_losses"] = individual
+            return result
+
+        # Aggregate losses
+        total_cls = torch.stack(cls_losses).sum()
+        total_struct = torch.stack(struct_losses).sum()
+        total_count = torch.stack(count_losses).sum()
+        total_loss = total_cls + total_struct + total_count
+
+        result = {
+            "total_loss": total_loss,
+            "classification_loss": total_cls,
+            "structure_loss": total_struct,
+            "count_loss": total_count,
+            "batch_size": valid_samples
+        }
+
+        if return_individual_losses:
+            result["individual_losses"] = individual
+
+        return result
+
+    def _empty_loss_dict(self) -> Dict[str, torch.Tensor]:
+        """Return empty loss dictionary."""
+        device = next(self.parameters()).device
+        return {
+            "total_loss": torch.tensor(0.0, device=device, requires_grad=True),
+            "classification_loss": torch.tensor(0.0, device=device),
+            "structure_loss": torch.tensor(0.0, device=device),
+            "count_loss": torch.tensor(0.0, device=device),
+            "batch_size": 0
+        }
+
+    # =========================================================================
+    # Encoding
+    # =========================================================================
+
+    def _encode_batch(
+            self,
+            batch: PreprocessedBatch
+    ) -> Tuple[List[torch.Tensor], List[List[torch.Tensor]]]:
+        """
+        Encode batch through transformer and extract embeddings.
+
+        Args:
+            batch: PreprocessedBatch with input_ids and attention_mask
+
+        Returns:
+            - all_token_embs: List of (text_len, hidden) per sample
+            - all_schema_embs: List of schema embeddings per sample
+        """
+        # Forward through encoder
+        outputs = self.encoder(
+            input_ids=batch.input_ids,
+            attention_mask=batch.attention_mask
+        )
+        token_embeddings = outputs.last_hidden_state
+
+        # Extract embeddings using processor
+        return self.processor.extract_embeddings_from_batch(
+            token_embeddings,
+            batch.input_ids,
+            batch
+        )
+
+    # =========================================================================
+    # Loss Computation
+    # =========================================================================
+
+    def _compute_sample_loss(
+            self,
+            token_embeddings: torch.Tensor,
+            embs_per_schema: List[List[torch.Tensor]],
+            task_types: List[str],
+            structure_labels: List[Any],
+            device: torch.device
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute all losses for a single sample.
+
+        Args:
+            token_embeddings: (text_len, hidden) text token embeddings
+            embs_per_schema: List of schema embeddings
+            task_types: Task type for each schema
+            structure_labels: Labels for each schema
+            device: Computation device
+
+        Returns:
+            Dict with classification, structure, and count losses
+        """
+        cls_loss = torch.tensor(0.0, device=device)
+        struct_loss = torch.tensor(0.0, device=device)
+        count_loss = torch.tensor(0.0, device=device)
+
+        # Compute span representations if needed
+        has_span_task = any(t != "classifications" for t in task_types)
+        span_info = None
+        if has_span_task and token_embeddings.numel() > 0:
+            span_info = self.compute_span_rep(token_embeddings)
+
+        all_counts = []
+        all_p_embs = []
+
+        for i, task_type in enumerate(task_types):
+            if not embs_per_schema[i]:
+                continue
+
+            schema_emb = torch.stack(embs_per_schema[i])
+
+            if task_type == "classifications":
+                # Classification loss
+                cls_embeds = schema_emb[1:]  # Skip [P] token
+                logits = self.classifier(cls_embeds).squeeze(-1)
+                labels = torch.tensor(structure_labels[i], dtype=torch.float, device=device)
+                cls_loss = cls_loss + F.binary_cross_entropy_with_logits(
+                    logits, labels, reduction="sum"
+                )
+            else:
+                # Structure loss
+                structure = structure_labels[i]
+
+                if structure[0] == 0:
+                    # No instances to extract
+                    continue
+
+                if span_info is not None:
+                    struct_loss = struct_loss + self.compute_struct_loss(
+                        span_info["span_rep"],
+                        schema_emb,
+                        structure,
+                        span_info["span_mask"]
+                    )
+
+                # Collect for count loss (skip entities)
+                if task_type != "entities":
+                    all_counts.append(min(structure[0], 19))
+                    all_p_embs.append(schema_emb[0])
+
+        # Count loss
+        if all_counts and all_p_embs:
+            counts = torch.tensor(all_counts, dtype=torch.long, device=device)
+            p_embs = torch.stack(all_p_embs)
+            count_loss = F.cross_entropy(self.count_pred(p_embs), counts, reduction="sum")
+
+        return {
+            "classification": cls_loss,
+            "structure": struct_loss,
+            "count": count_loss
+        }
+
+    # =========================================================================
+    # Span Representation
+    # =========================================================================
+
+    def compute_span_rep(self, token_embeddings: torch.Tensor) -> Dict[str, Any]:
+        """
+        Compute span representations for token embeddings.
+
+        Args:
+            token_embeddings: (text_len, hidden) token embeddings
+
+        Returns:
+            Dict with span_rep, spans_idx, and span_mask
+        """
         text_length = len(token_embeddings)
-        device = next(self.encoder.parameters()).device
+        device = token_embeddings.device
 
         spans_idx = []
         for i in range(text_length):
@@ -134,97 +401,62 @@ class Extractor(PreTrainedModel):
                 if i + j < text_length:
                     spans_idx.append((i, i + j))
                 else:
-                    spans_idx.append((-1, -1))  # Explicitly mark invalid spans
+                    spans_idx.append((-1, -1))
 
-        spans_idx = torch.LongTensor([spans_idx]).to(device)  # shape: [1, num_spans, 2]
+        spans_idx = torch.tensor([spans_idx], dtype=torch.long, device=device)
 
-        # Mask invalid spans (where either start or end == -1)
+        # Mask invalid spans
         span_mask = (spans_idx[:, :, 0] == -1) | (spans_idx[:, :, 1] == -1)
-        span_mask = span_mask.to(device)
 
-        # Replace invalid spans with dummy (0, 0) for safe indexing
-        safe_spans_idx = torch.where(
+        # Replace invalid with (0, 0) for safe indexing
+        safe_spans = torch.where(
             span_mask.unsqueeze(-1),
             torch.zeros_like(spans_idx),
             spans_idx
         )
 
-        # Compute span representations (batch size = 1)
-        span_rep = self.span_rep(token_embeddings.unsqueeze(0), safe_spans_idx).squeeze(0)  # [num_spans, hidden_dim]
+        # Compute span representations
+        span_rep = self.span_rep(
+            token_embeddings.unsqueeze(0),
+            safe_spans
+        ).squeeze(0)
 
         return {
             "span_rep": span_rep,
             "spans_idx": spans_idx,
-            "span_mask": span_mask,
+            "span_mask": span_mask
         }
 
-    def classification_loss(
+    def compute_struct_loss(
             self,
-            embs_per_schema: List[List[torch.Tensor]],
-            task_types: List[str],
-            structure_labels: List[Any]
+            span_rep: torch.Tensor,
+            schema_emb: torch.Tensor,
+            structure: List[Any],
+            span_mask: torch.Tensor,
+            masking_rate: float = 0.5
     ) -> torch.Tensor:
         """
-        Helper to compute classification loss for a single sample.
-
-        Parameters
-        ----------
-        embs_per_schema : List[List[torch.Tensor]]
-            Embeddings per schema for this sample
-        task_types : List[str]
-            Task types for each schema
-        structure_labels : List[Any]
-            Structure labels including classification labels
-
-        Returns
-        -------
-        torch.Tensor
-            Classification loss for this sample
-        """
-        cls_embeds = []
-        binary_labels = []
-
-        for i, task_type in enumerate(task_types):
-            if task_type == "classifications":
-                # Handle empty embeddings
-                if not embs_per_schema[i]:
-                    continue
-
-                schema_embs = torch.stack(embs_per_schema[i], dim=0)
-                cls_embeds.append(schema_embs[1:])  # Skip [P] token
-                binary_labels.extend(structure_labels[i])
-
-        if not cls_embeds:
-            return torch.tensor(0.0, device=next(self.parameters()).device)
-
-        cls_embeds = torch.cat(cls_embeds, dim=0)
-        logits = self.classifier(cls_embeds)
-        binary_labels = torch.FloatTensor(binary_labels).to(logits.device)
-
-        loss_fn = nn.BCEWithLogitsLoss(reduction="sum")
-        return loss_fn(logits.squeeze(-1), binary_labels)
-
-    def compute_struct_loss(self, h, pc_embeddings, structures, span_mask,
-                            masking_rate=0.5):
-        """
-        Enhanced structure loss with random negative span masking to improve recall
-        by addressing the unlabeled entity problem.
+        Compute structure extraction loss with negative span masking.
 
         Args:
-            h: Span representations
-            pc_embeddings: Schema embeddings
-            structures: Ground truth structure labels
-            span_mask: Mask for valid spans
-            masking_rate: Probability of masking negative spans (0.0 to 1.0)
-        """
-        gold_count_val = min(structures[0], 19)
-        struct_proj = self.count_embed(pc_embeddings[1:], gold_count_val)
-        scores = torch.einsum('lkd,bpd->bplk', h, struct_proj)
+            span_rep: (num_spans, hidden) span representations
+            schema_emb: (num_fields + 1, hidden) schema embeddings
+            structure: [count, spans] structure labels
+            span_mask: (1, num_spans) mask for invalid spans
+            masking_rate: Probability of masking negative spans
 
-        # Create label tensor matching the shape of scores
+        Returns:
+            Structure loss tensor
+        """
+        gold_count = min(structure[0], 19)
+        struct_proj = self.count_embed(schema_emb[1:], gold_count)
+        scores = torch.einsum('lkd,bpd->bplk', span_rep, struct_proj)
+
+        # Create label tensor
         labs = torch.zeros_like(scores)
-        for i in range(gold_count_val):
-            gold_spans = structures[1][i]
+
+        for i in range(gold_count):
+            gold_spans = structure[1][i]
             for k, span in enumerate(gold_spans):
                 if span is None or span == (-1, -1):
                     continue
@@ -234,316 +466,94 @@ class Extractor(PreTrainedModel):
                     if 0 <= start < scores.shape[2] and 0 <= width < scores.shape[3]:
                         labs[i, k, start, width] = 1
                 elif isinstance(span, list):
-                    for sub_span in span:
-                        if sub_span is None or sub_span == (-1, -1):
+                    for sub in span:
+                        if sub is None or sub == (-1, -1):
                             continue
-                        start, end = sub_span
+                        start, end = sub
                         width = end - start
                         if 0 <= start < scores.shape[2] and 0 <= width < scores.shape[3]:
                             labs[i, k, start, width] = 1
 
-        # Apply random masking to negative spans only
-        if masking_rate > 0.0:
-            # Identify negative spans (where labels are 0)
-            negative_spans = (labs == 0)
-
-            # Generate random mask for negative spans
+        # Apply negative masking
+        if masking_rate > 0.0 and self.training:
+            negative = (labs == 0)
             random_mask = torch.rand_like(scores) < masking_rate
-
-            # Apply masking only to negative spans
-            spans_to_mask = negative_spans & random_mask
-
-            # Create loss computation mask (1 = compute loss, 0 = ignore)
-            loss_computation_mask = (~spans_to_mask).float()
+            to_mask = negative & random_mask
+            loss_mask = (~to_mask).float()
         else:
-            loss_computation_mask = torch.ones_like(scores)
+            loss_mask = torch.ones_like(scores)
 
-        # Compute loss with masking applied
-        loss_struct = F.binary_cross_entropy_with_logits(scores, labs, reduction="none")
-        loss_struct = loss_struct * loss_computation_mask
-        loss_struct = loss_struct.view(loss_struct.shape[0], loss_struct.shape[1], -1) * (~span_mask[0]).float()
-        loss_struct = loss_struct.sum()
+        # Compute masked loss
+        loss = F.binary_cross_entropy_with_logits(scores, labs, reduction="none")
+        loss = loss * loss_mask
+        loss = loss.view(loss.shape[0], loss.shape[1], -1) * (~span_mask[0]).float()
 
-        return loss_struct
+        return loss.sum()
 
-    def forward(
-            self,
-            records: List[Dict[str, Any]],
-            return_individual_losses: bool = False
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Process multiple records in batch for efficient training.
+    # =========================================================================
+    # Hugging Face Methods
+    # =========================================================================
 
-        This method efficiently processes multiple records by:
-        1. Batch encoding through the transformer
-        2. Computing losses for each sample
-        3. Aggregating results
-
-        Parameters
-        ----------
-        records : List[Dict[str, Any]]
-            List of records, each with 'text' and 'schema' keys
-        return_individual_losses : bool, default=False
-            If True, return individual losses per sample in addition to aggregated losses
-
-        Returns
-        -------
-        Dict[str, torch.Tensor]
-            Dictionary containing:
-            - 'total_loss': Averaged total loss across batch
-            - 'classification_loss': Averaged classification loss
-            - 'structure_loss': Averaged structure loss
-            - 'count_loss': Averaged count loss
-            - 'batch_size': Number of records processed
-            - 'individual_losses': (optional) List of loss dicts per sample
-        """
-        if not records:
-            device = next(self.parameters()).device
-            result = {
-                'total_loss': torch.tensor(0.0, device=device),
-                'classification_loss': torch.tensor(0.0, device=device),
-                'structure_loss': torch.tensor(0.0, device=device),
-                'count_loss': torch.tensor(0.0, device=device),
-                'batch_size': 0
-            }
-            if return_individual_losses:
-                result['individual_losses'] = []
-            return result
-
-        # Batch encode through processor
-        batch_results = self.processor.batch_process_records(self.encoder, records)
-
-        # Prepare for loss computation
-        all_classification_losses = []
-        all_structure_losses = []
-        all_count_losses = []
-        all_total_losses = []
-        individual_loss_records = []
-
-        device = next(self.parameters()).device
-
-        # Process each sample's losses
-        valid_samples = 0
-        for i in range(len(records)):
-            try:
-                # Skip if no valid embeddings
-                if i >= len(batch_results.token_embeddings) or len(batch_results.token_embeddings[i]) == 0:
-                    print(f"Warning: Skipping sample {i} due to missing embeddings")
-                    continue
-
-                # Compute span representations for this sample
-                # if all element of batch_results.task_types[i] is "classifications" do
-                if all(task == "classifications" for task in batch_results.task_types[i]):
-                    span_rep = {}
-                else:
-                    span_rep = self.compute_span_rep(batch_results.token_embeddings[i])
-
-                # Classification loss
-                cls_loss = self.classification_loss(
-                    batch_results.embs_per_schema[i],
-                    batch_results.task_types[i],
-                    batch_results.structure_labels[i]
-                )
-                all_classification_losses.append(cls_loss)
-
-                # Structure and count losses
-                struct_loss_total = torch.tensor(0.0, device=device)
-                count_loss_total = torch.tensor(0.0, device=device)
-
-                all_counts = []
-                all_p_embs = []
-
-                for schema_idx in range(len(batch_results.embs_per_schema[i])):
-                    if batch_results.task_types[i][schema_idx] != "classifications":
-                        # Handle empty embeddings
-                        if not batch_results.embs_per_schema[i][schema_idx]:
-                            continue
-
-                        schema_emb = torch.stack(batch_results.embs_per_schema[i][schema_idx])
-                        structure = batch_results.structure_labels[i][schema_idx]
-
-                        if structure[0] == 0:
-                            loss_struct = torch.tensor(0.0, device=device)
-                        else:
-                            # Use dynamic masking rate during training
-                            loss_struct = self.compute_struct_loss(
-                                span_rep["span_rep"],
-                                schema_emb,
-                                structure,
-                                span_rep["span_mask"],
-                            )
-                        struct_loss_total += loss_struct
-
-                        if batch_results.task_types[i][schema_idx] != "entities":
-                            all_counts.append(min(structure[0], 19))
-                            all_p_embs.append(schema_emb[0])
-
-                all_structure_losses.append(struct_loss_total)
-
-                # Count loss
-                if all_counts and all_p_embs:
-                    all_counts = torch.LongTensor(all_counts).to(device)
-                    all_p_embs = torch.stack(all_p_embs, dim=0)
-                    count_loss = F.cross_entropy(self.count_pred(all_p_embs), all_counts, reduction="sum")
-                    count_loss_total += count_loss
-
-                all_count_losses.append(count_loss_total)
-
-                # Total loss for this sample
-                sample_total_loss = cls_loss + struct_loss_total + count_loss_total
-                all_total_losses.append(sample_total_loss)
-
-                # Store individual losses if requested
-                if return_individual_losses:
-                    individual_loss_records.append({
-                        'total_loss': sample_total_loss.item(),
-                        'classification_loss': cls_loss.item(),
-                        'structure_loss': struct_loss_total.item(),
-                        'count_loss': count_loss_total.item()
-                    })
-
-                valid_samples += 1
-
-            except Exception as e:
-                print(f"Error processing sample {i}: {str(e)}")
-                # Add zero losses for failed samples
-                zero_loss = torch.tensor(0.0, device=device)
-                all_classification_losses.append(zero_loss)
-                all_structure_losses.append(zero_loss)
-                all_count_losses.append(zero_loss)
-                all_total_losses.append(zero_loss)
-
-                if return_individual_losses:
-                    individual_loss_records.append({
-                        'total_loss': 0.0,
-                        'classification_loss': 0.0,
-                        'structure_loss': 0.0,
-                        'count_loss': 0.0,
-                        'error': str(e)
-                    })
-
-        # Handle case where all samples failed
-        if valid_samples == 0:
-            result = {
-                'total_loss': torch.tensor(0.0, device=device, requires_grad=True),
-                'classification_loss': torch.tensor(0.0, device=device),
-                'structure_loss': torch.tensor(0.0, device=device),
-                'count_loss': torch.tensor(0.0, device=device),
-                'batch_size': len(records)
-            }
-            if return_individual_losses:
-                result['individual_losses'] = individual_loss_records
-            return result
-
-        # Aggregate losses
-        total_classification_loss = torch.stack(all_classification_losses).sum()
-        total_structure_loss = torch.stack(all_structure_losses).sum()
-        total_count_loss = torch.stack(all_count_losses).sum()
-        total_loss = torch.stack(all_total_losses).sum()
-
-        # Average by number of valid samples
-        result = {
-            'total_loss': total_loss,
-            'classification_loss': total_classification_loss,
-            'structure_loss': total_structure_loss,
-            'count_loss': total_count_loss,
-            'batch_size': valid_samples
-        }
-
-        # Ensure loss requires gradients for training
-        if self.training:
-            result['total_loss'].requires_grad_(True)
-
-        if return_individual_losses:
-            result['individual_losses'] = individual_loss_records
-
-        return result
-
-    # ---------------------------
-    # Hugging Face Compatibility Methods
-    # ---------------------------
     def push_to_hub(self, repo_id: str, private: bool = True):
-        """
-        Push the model (configuration, weights, and tokenizer) to the Hugging Face Hub.
-        """
+        """Push model to Hugging Face Hub."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             self.save_pretrained(tmp_dir)
             super().push_to_hub(repo_id=repo_id, save_dir=tmp_dir, private=private)
-            # Note: the tokenizer used is from the processor.
             self.processor.tokenizer.push_to_hub(repo_id)
 
     @classmethod
-    def from_pretrained(cls, repo_or_dir, **kwargs):
-        """
-        Load the model from a directory or repository on the Hugging Face Hub.
-        """
-        from huggingface_hub import hf_hub_download  # ensure this is available
+    def from_pretrained(cls, repo_or_dir: str, **kwargs):
+        """Load model from Hugging Face Hub or local directory."""
+        from huggingface_hub import hf_hub_download
 
-        def download_or_local(repo_or_dir, filename):
-            if os.path.isdir(repo_or_dir):
-                return os.path.join(repo_or_dir, filename)
-            else:
-                return hf_hub_download(repo_or_dir, filename)
+        def download_or_local(repo, filename):
+            if os.path.isdir(repo):
+                return os.path.join(repo, filename)
+            return hf_hub_download(repo, filename)
 
-        # Load the model configuration.
         config_path = download_or_local(repo_or_dir, "config.json")
         config = cls.config_class.from_pretrained(config_path)
 
-        # Load the encoder configuration.
         encoder_config_path = download_or_local(repo_or_dir, "encoder_config/config.json")
         encoder_config = AutoConfig.from_pretrained(encoder_config_path)
 
-        # Load the tokenizer.
         tokenizer = AutoTokenizer.from_pretrained(repo_or_dir)
-
-        # Initialize the model.
         model = cls(config, encoder_config=encoder_config, tokenizer=tokenizer)
 
-        # Load model weights.
+        # Load weights
         try:
             model_path = download_or_local(repo_or_dir, "model.safetensors")
-            model_state_dict = load_file(model_path)
+            state_dict = load_file(model_path)
         except Exception:
             model_path = download_or_local(repo_or_dir, "pytorch_model.bin")
-            model_state_dict = torch.load(model_path, map_location="cpu")
+            state_dict = torch.load(model_path, map_location="cpu")
 
-        # if shape is not equal, fill additional tokens embedding to the state dict given the model
+        # Handle embedding size mismatch
         try:
-            if model_state_dict["encoder.embeddings.word_embeddings.weight"].shape[0] != \
-                    model.encoder.embeddings.word_embeddings.weight.shape[0]:
-                model_state_dict["encoder.embeddings.word_embeddings.weight"] = torch.cat(
-                    [
-                        model_state_dict["encoder.embeddings.word_embeddings.weight"],
-                        torch.randn(model.encoder.embeddings.word_embeddings.weight.shape[0] -
-                                    model_state_dict["encoder.embeddings.word_embeddings.weight"].shape[0],
-                                    model_state_dict["encoder.embeddings.word_embeddings.weight"].shape[1]) * 0.02
-                    ],
-                    dim=0
-                )
+            saved_emb = state_dict["encoder.embeddings.word_embeddings.weight"]
+            model_emb = model.encoder.embeddings.word_embeddings.weight
+            if saved_emb.shape[0] != model_emb.shape[0]:
+                extra = model_emb.shape[0] - saved_emb.shape[0]
+                state_dict["encoder.embeddings.word_embeddings.weight"] = torch.cat([
+                    saved_emb,
+                    torch.randn(extra, saved_emb.shape[1]) * 0.02
+                ], dim=0)
         except KeyError:
             pass
 
-        model.load_state_dict(model_state_dict)
-
+        model.load_state_dict(state_dict)
         return model
 
-    def save_pretrained(self, save_directory, **kwargs):
-        """
-        Save the model configuration, encoder configuration, state dict (using safetensors),
-        and tokenizer to a directory.
-        """
+    def save_pretrained(self, save_directory: str, **kwargs):
+        """Save model to directory."""
         os.makedirs(save_directory, exist_ok=True)
-        # Save the main config.
         self.config.save_pretrained(save_directory)
 
-        # Save encoder configuration.
         encoder_config_path = os.path.join(save_directory, "encoder_config")
         os.makedirs(encoder_config_path, exist_ok=True)
         self.encoder.config.save_pretrained(encoder_config_path)
 
-        # Save model weights using safetensors.
-        model_save_path = os.path.join(save_directory, "model.safetensors")
-        save_file(self.state_dict(), model_save_path)
+        model_path = os.path.join(save_directory, "model.safetensors")
+        save_file(self.state_dict(), model_path)
 
-        # Save the tokenizer from the processor.
         self.processor.tokenizer.save_pretrained(save_directory)

@@ -1,86 +1,152 @@
+"""
+GLiNER2 Trainer with Optimized DataLoader-based Preprocessing
+
+This module provides training utilities that leverage parallel preprocessing
+via DataLoader workers for maximum GPU utilization.
+"""
+
 import json
 import random
 from typing import Union, List
 
-import transformers
-from torch.utils.data import Dataset
-from transformers import Trainer
 import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import Trainer, TrainingArguments
 
-# Import apex if available (for fp16 support)
-if transformers.utils.is_apex_available():
-    from apex import amp
+from gliner2.processor import SchemaTransformer, PreprocessedBatch, SamplingConfig
 
-# Import sagemaker if available
-from transformers.trainer import is_sagemaker_mp_enabled
 
-if is_sagemaker_mp_enabled():
-    from transformers.trainer_pt_utils import smp_forward_backward
-
+# =============================================================================
+# Dataset
+# =============================================================================
 
 class ExtractorDataset(Dataset):
     """
-    A Dataset for loading JSONL data tailored for the Extractor model.
-    Accepts a single file path or a list of file paths.
+    Dataset for GLiNER2 training.
+
+    Returns (text, schema) tuples that are processed by the collate function.
+
+    Args:
+        data_paths: Path or list of paths to JSONL training files
+        shuffle: Whether to shuffle data on load (default: True)
+
+    JSONL Format:
+        {"input": "text here", "output": {"entities": {...}, ...}}
     """
 
-    def __init__(self, data_paths: Union[str, List[str]]):
+    def __init__(self, data_paths: Union[str, List[str]], shuffle: bool = True):
         if isinstance(data_paths, str):
-            data_paths = [data_paths]  # Ensure it's a list
+            data_paths = [data_paths]
 
-        # log number of files
-        print(f"Loading {len(data_paths)} files for training.")
+        print(f"Loading {len(data_paths)} file(s) for training...")
 
         self.data = []
         for path in data_paths:
             with open(path, "r", encoding="utf-8") as f:
                 self.data.extend([json.loads(line) for line in f])
 
-        # shuffle the data
-        random.shuffle(self.data)
+        if shuffle:
+            random.shuffle(self.data)
 
-        # log number of records
-        print(f"Loaded {len(self.data)} records from {len(data_paths)} files.")
+        print(f"Loaded {len(self.data)} records from {len(data_paths)} file(s).")
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> tuple:
+        """Return (text, schema) tuple."""
         record = self.data[idx]
-        # Map keys to what your model expects.
         return record["input"], record["output"]
 
 
+# =============================================================================
+# Data Collator
+# =============================================================================
+
 class ExtractorDataCollator:
     """
-    Data collator for the Extractor model.
+    Data collator that uses processor's collate function.
+
+    This enables parallel preprocessing via DataLoader workers.
+
+    Args:
+        processor: SchemaTransformer instance
+        is_training: Whether in training mode (enables augmentation)
     """
 
-    def __call__(self, batch):
-        return batch
+    def __init__(self, processor: SchemaTransformer, is_training: bool = True):
+        self.processor = processor
+        self.is_training = is_training
 
+    def __call__(self, batch: List[tuple]) -> PreprocessedBatch:
+        """
+        Collate batch of (text, schema) tuples into PreprocessedBatch.
+
+        Args:
+            batch: List of (text, schema) tuples from dataset
+
+        Returns:
+            PreprocessedBatch ready for model.forward()
+        """
+        if self.is_training:
+            return self.processor.collate_fn_train(batch)
+        else:
+            return self.processor.collate_fn_inference(batch)
+
+
+# =============================================================================
+# Trainer
+# =============================================================================
 
 class ExtractorTrainer(Trainer):
     """
-    A Trainer with customized optimizer and training step tailored for the Extractor model.
-    Now supports an option to freeze everything except `model.classifier`.
-    Includes FP16 support.
+    Trainer for GLiNER2 with optimized preprocessing.
+
+    Key features:
+    - Parallel preprocessing via DataLoader workers
+    - Separate learning rates for encoder and other layers
+    - Optional classifier-only fine-tuning
+    - FP16 support
+    - Gradient accumulation
+
+    Example:
+        >>> processor = SchemaTransformer(model_name, sampling_config=config)
+        >>> collator = ExtractorDataCollator(processor, is_training=True)
+        >>> 
+        >>> trainer = ExtractorTrainer(
+        ...     model=model,
+        ...     args=TrainingArguments(
+        ...         output_dir="./output",
+        ...         per_device_train_batch_size=32,
+        ...         dataloader_num_workers=8,  # Parallel preprocessing!
+        ...         dataloader_pin_memory=True,
+        ...     ),
+        ...     train_dataset=dataset,
+        ...     data_collator=collator,
+        ...     encoder_lr=1e-5,
+        ...     custom_lr=5e-4,
+        ...     weight_decay=0.01,
+        ... )
+        >>> trainer.train()
     """
 
     def __init__(
             self,
-            encoder_lr,
-            custom_lr,
-            weight_decay,
+            encoder_lr: float = 1e-5,
+            custom_lr: float = 5e-4,
+            weight_decay: float = 0.01,
             finetune_classifier: bool = False,
             **kwargs
     ):
         """
+        Initialize trainer.
+
         Args:
-            encoder_lr (float): learning rate for encoder parameters (ignored if finetune_classifier=True)
-            custom_lr (float): learning rate for non-encoder parameters (e.g., classifier)
-            weight_decay (float): weight decay for all parameter groups
-            finetune_classifier (bool): if True, freeze all parameters except `model.classifier`
+            encoder_lr: Learning rate for encoder parameters
+            custom_lr: Learning rate for non-encoder parameters
+            weight_decay: Weight decay for all parameters
+            finetune_classifier: If True, freeze all except classifier
+            **kwargs: Arguments passed to Trainer
         """
         self.encoder_lr = encoder_lr
         self.custom_lr = custom_lr
@@ -90,122 +156,167 @@ class ExtractorTrainer(Trainer):
         super().__init__(**kwargs)
 
         if self.finetune_classifier:
-            # Freeze all parameters except classifier
-            for name, param in self.model.named_parameters():
-                if not name.startswith("classifier"):
-                    param.requires_grad = False
+            self._freeze_non_classifier()
+
+    def _freeze_non_classifier(self):
+        """Freeze all parameters except classifier."""
+        print("Finetuning classifier only: freezing all other parameters.")
+        for name, param in self.model.named_parameters():
+            if not name.startswith("classifier"):
+                param.requires_grad = False
 
     def create_optimizer(self):
-        """
-        Create an optimizer with separate parameter groups.
-        If finetune_classifier=True, only classifier params go into optimizer.
-        Otherwise, use two groups: encoder and everything else.
-        """
-
+        """Create optimizer with separate parameter groups."""
         if self.finetune_classifier:
-            # log
-            print("Finetuning classifier only: freezing all other parameters.")
-            # Only include classifier parameters in optimizer
+            # Only classifier parameters
             classifier_params = [
                 p for n, p in self.model.named_parameters()
                 if n.startswith("classifier") and p.requires_grad
             ]
             if not classifier_params:
-                raise ValueError("No trainable parameters found in `model.classifier`.")
-            optimizer_grouped_parameters = [
-                {
-                    "params": classifier_params,
-                    "lr": self.custom_lr,
-                    "weight_decay": self.custom_weight_decay,
-                }
-            ]
+                raise ValueError("No trainable parameters in classifier.")
+
+            groups = [{
+                "params": classifier_params,
+                "lr": self.custom_lr,
+                "weight_decay": self.custom_weight_decay,
+            }]
         else:
-            # Full fine-tuning: encoder and others separated
-            # encoder parameters
+            # Separate encoder and other parameters
             encoder_params = list(self.model.encoder.parameters())
-            # everything else (including classifier, count layers, etc.)
             other_params = [
-                param
-                for name, param in self.model.named_parameters()
-                if "encoder" not in name and param.requires_grad
+                p for n, p in self.model.named_parameters()
+                if "encoder" not in n and p.requires_grad
             ]
-            optimizer_grouped_parameters = [
-                {"params": encoder_params, "lr": self.encoder_lr, "weight_decay": self.custom_weight_decay},
-                {"params": other_params, "lr": self.custom_lr, "weight_decay": self.custom_weight_decay},
+
+            groups = [
+                {
+                    "params": encoder_params,
+                    "lr": self.encoder_lr,
+                    "weight_decay": self.custom_weight_decay
+                },
+                {
+                    "params": other_params,
+                    "lr": self.custom_lr,
+                    "weight_decay": self.custom_weight_decay
+                },
             ]
 
         optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
-        self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+        self.optimizer = optimizer_cls(groups, **optimizer_kwargs)
 
-    def compute_loss(self, model, inputs, return_outputs: bool = False, *args, **kwargs):
+    def compute_loss(self, model, inputs: PreprocessedBatch, return_outputs: bool = False, **kwargs):
         """
-        Compute the objective for a Hugging-Face Trainer batch **once** with
-        `model.process_records` instead of looping over `model.process_record`.
-        """
-        # Ensure training-time behaviour (negative-span masking, dropout, etc.).
-        model.train()
-        model.processor.change_mode(is_training=True)
-
-        # 1. Pack HF `inputs` -> List[{"text": str, "schema": dict}]
-        batch_records = [{"text": rec[0], "schema": rec[1]} for rec in inputs]
-
-        # 2. Forward pass in one call
-        batch_out = model.forward(
-            batch_records,
-            return_individual_losses=False
-        )
-
-        # 3. Derive the loss the Trainer expects
-        if batch_out["batch_size"] == 0:  # every sample failed – rare
-            device = next(model.parameters()).device
-            # Return a zero loss tensor that requires gradients
-            loss = torch.tensor(0.0, device=device, requires_grad=True)
-        else:
-            # forward returns a **sum** over samples
-            loss = batch_out["total_loss"]
-        
-        return (loss, batch_out) if return_outputs else loss
-
-    def training_step(self, model, inputs, num_items_in_batch=None):
-        """
-        Perform a training step on a batch of inputs with FP16 support and CUDA OOM handling.
+        Compute loss on preprocessed batch.
 
         Args:
-            model: The model to train.
-            inputs: The inputs and targets of the model.
-            num_items_in_batch: Number of items in the batch (optional, for compatibility).
+            model: The model
+            inputs: PreprocessedBatch from collator
+            return_outputs: Whether to return outputs dict
+
+        Returns:
+            Loss tensor, optionally with outputs dict
         """
-        model.train()
+        # Forward pass - inputs is already PreprocessedBatch
+        outputs = model(inputs, return_individual_losses=False)
 
-        try:
-            inputs = self._prepare_inputs(inputs)
+        # Handle empty batch
+        if outputs["batch_size"] == 0:
+            device = next(model.parameters()).device
+            loss = torch.tensor(0.0, device=device, requires_grad=True)
+        else:
+            loss = outputs["total_loss"]
 
-            if is_sagemaker_mp_enabled():
-                loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
-                return loss_mb.reduce_mean().detach().to(self.args.device)
+        return (loss, outputs) if return_outputs else loss
 
-            with self.compute_loss_context_manager():
-                loss = self.compute_loss(model, inputs)
 
-            del inputs
-            torch.cuda.empty_cache()
+# =============================================================================
+# Training Utilities
+# =============================================================================
 
-            if self.args.n_gpu > 1:
-                loss = loss.mean()  # mean() to average on multi-gpu parallel training
+def create_training_dataloader(
+        dataset: ExtractorDataset,
+        processor: SchemaTransformer,
+        batch_size: int = 32,
+        num_workers: int = 8,
+        pin_memory: bool = True,
+        shuffle: bool = True,
+        prefetch_factor: int = 2,
+) -> DataLoader:
+    """
+    Create an optimized DataLoader for training.
 
-            if self.use_apex:
-                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                self.accelerator.backward(loss)
+    This function creates a DataLoader configured for maximum preprocessing
+    efficiency using parallel workers.
 
-            return loss.detach() / self.args.gradient_accumulation_steps
+    Args:
+        dataset: ExtractorDataset instance
+        processor: SchemaTransformer for preprocessing
+        batch_size: Batch size
+        num_workers: Number of parallel workers for preprocessing
+        pin_memory: Pin memory for faster GPU transfer
+        shuffle: Shuffle data each epoch
+        prefetch_factor: Batches to prefetch per worker
 
-        except Exception as e:
-            print(f"Skipping iteration due to error: {e}")
-            model.zero_grad(set_to_none=True)
-            torch.cuda.empty_cache()
-            # Safely get device for DataParallel or normal model
-            _model = getattr(model, "module", model)
-            device = next(_model.parameters()).device
-            return torch.tensor(0.0, requires_grad=True, device=device)
+    Returns:
+        Configured DataLoader
+
+    Example:
+        >>> loader = create_training_dataloader(
+        ...     dataset=train_dataset,
+        ...     processor=processor,
+        ...     batch_size=32,
+        ...     num_workers=8,
+        ... )
+        >>> for batch in loader:
+        ...     batch = batch.to(device)
+        ...     loss = model(batch)["total_loss"]
+    """
+    collator = ExtractorDataCollator(processor, is_training=True)
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        collate_fn=collator,
+        persistent_workers=num_workers > 0,
+    )
+
+
+def create_inference_dataloader(
+        texts: List[str],
+        schemas: List[dict],
+        processor: SchemaTransformer,
+        batch_size: int = 32,
+        num_workers: int = 4,
+) -> DataLoader:
+    """
+    Create a DataLoader for inference.
+
+    Args:
+        texts: List of input texts
+        schemas: List of schemas (same length as texts or single schema)
+        processor: SchemaTransformer for preprocessing
+        batch_size: Batch size
+        num_workers: Number of workers
+
+    Returns:
+        DataLoader yielding PreprocessedBatch
+    """
+    # Handle single schema for all texts
+    if len(schemas) == 1:
+        schemas = schemas * len(texts)
+
+    dataset = list(zip(texts, schemas))
+    collator = ExtractorDataCollator(processor, is_training=False)
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collator,
+    )
