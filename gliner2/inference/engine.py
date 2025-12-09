@@ -1565,7 +1565,8 @@ class GLiNER2(Extractor):
             # Relations are extracted differently - they have head and tail fields
             extracted_results = self._extract_relation_results(
                 schema_name, field_names, span_scores, count, record, outputs,
-                default_threshold, relation_metadata, field_orders
+                default_threshold, relation_metadata, field_orders,
+                include_confidence=include_confidence
             )
             # Always add to results (empty list if no relations found)
             results[schema_name] = extracted_results if extracted_results else []
@@ -1811,14 +1812,26 @@ class GLiNER2(Extractor):
             outputs: Dict,
             default_threshold: float,
             relation_metadata: Dict,
-            field_orders: Dict[str, List[str]]
-    ) -> List[Tuple[str, str]]:
-        """Extract relation results as tuples (source, target)."""
+            field_orders: Dict[str, List[str]],
+            include_confidence: bool = False,
+    ) -> List:
+        """
+        Extract relation results.
+
+        Default (include_confidence=False):
+            (head_text, tail_text)
+        With include_confidence=True:
+            (
+                (head_text, head_conf, head_start, head_end),
+                (tail_text, tail_conf, tail_start, tail_end),
+            )
+        where start/end are token indices in the text token sequence.
+        """
         if span_scores is None:
             return []
 
         text_len = len(self.processor.tokenize_text(record["text"]))
-        instances = []
+        instances: List = []
 
         # Get relation threshold from metadata
         relation_threshold = default_threshold
@@ -1834,7 +1847,8 @@ class GLiNER2(Extractor):
             scores = span_scores[instance_idx, :, -text_len:]
 
             # Extract head and tail spans
-            extracted_values = []
+            extracted_values: List[Optional[str]] = []
+            span_meta: List[Optional[Tuple[str, float, int, int]]] = []
 
             # Process fields in the order they were defined (head, tail)
             for field_name in ordered_fields:
@@ -1850,17 +1864,38 @@ class GLiNER2(Extractor):
 
                 # For relations, we want the best span
                 if spans:
-                    # Take the first (highest confidence) span
-                    extracted_values.append(spans[0][0])
+                    # spans[0] = (text_span, conf, start, end)
+                    text_span, conf, start, end = spans[0]
+                    extracted_values.append(text_span)
+                    span_meta.append((text_span, conf, start, end))
                 else:
                     extracted_values.append(None)
+                    span_meta.append(None)
 
             # Only add instance if both source and target are present
             # Order is maintained: first is source (head), second is target (tail)
-            if len(extracted_values) == 2 and extracted_values[0] and extracted_values[1]:
-                instances.append((extracted_values[0], extracted_values[1]))
+            if (
+                len(extracted_values) == 2
+                and extracted_values[0]
+                and extracted_values[1]
+                and span_meta[0] is not None
+                and span_meta[1] is not None
+            ):
+                if include_confidence:
+                    # ((head_text, head_conf, head_start, head_end),
+                    #  (tail_text, tail_conf, tail_start, tail_end))
+                    instances.append(
+                        (
+                            span_meta[0],
+                            span_meta[1],
+                        )
+                    )
+                else:
+                    instances.append((extracted_values[0], extracted_values[1]))
 
         return instances
+
+
 
     def _find_choice_indices(self, choice: str, tokens: List[str]) -> List[int]:
         """Find all starting indices where a choice appears in tokens."""
