@@ -45,7 +45,11 @@ class LoRAConfig:
     dropout : float
         Dropout probability applied to LoRA path.
     target_modules : List[str]
-        Names of modules to apply LoRA to (e.g., ["query", "key", "value"]).
+        Names of modules to apply LoRA to. Uses substring matching.
+        Examples:
+        - ["query", "key", "value"] - matches query_proj, key_proj, value_proj
+        - ["query_proj", "key_proj", "value_proj"] - exact match also works
+        - ["dense"] - matches all layers named 'dense'
         Applied to encoder only.
     """
     enabled: bool = False
@@ -231,15 +235,18 @@ def apply_lora_to_model(
         root_name = "model"
     
     lora_layers = {}
-    target_modules_set = set(config.target_modules)
+    
+    def _should_apply_lora(module_name: str) -> bool:
+        """Check if LoRA should be applied to this module using substring matching."""
+        return any(target in module_name for target in config.target_modules)
     
     # Recursively find and replace target modules
     def _inject_lora_recursive(module: nn.Module, prefix: str = ""):
         for name, child in module.named_children():
             full_name = f"{prefix}.{name}" if prefix else name
             
-            # Check if this is a target module
-            if name in target_modules_set and isinstance(child, nn.Linear):
+            # Check if this is a target module (must be Linear layer)
+            if isinstance(child, nn.Linear) and _should_apply_lora(name):
                 # Replace with LoRA layer
                 lora_layer = LoRALayer(
                     base_layer=child,
