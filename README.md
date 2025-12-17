@@ -61,6 +61,25 @@ result = extractor.extract_entities(
 
 The models are available on [Hugging Face](https://huggingface.co/collections/fastino/gliner2-family).
 
+## 📚 Documentation & Tutorials
+
+Comprehensive guides for all GLiNER2 features:
+
+### Core Features
+- **[Text Classification](tutorial/1-classification.md)** - Single and multi-label classification with confidence scores
+- **[Entity Extraction](tutorial/2-ner.md)** - Named entity recognition with descriptions and spans
+- **[Structured Data Extraction](tutorial/3-json_extraction.md)** - Parse complex JSON structures from text
+- **[Combined Schemas](tutorial/4-combined.md)** - Multi-task extraction in a single pass
+- **[Regex Validators](tutorial/5-validator.md)** - Filter and validate extracted spans
+- **[Relation Extraction](tutorial/6-relation_extraction.md)** - Extract relationships between entities
+- **[API Access](tutorial/7-api.md)** - Use GLiNER2 via cloud API
+
+### Training & Customization
+- **[Training Data Format](tutorial/8-train_data.md)** - Complete guide to preparing training data
+- **[Model Training](tutorial/9-training.md)** - Train custom models for your domain
+- **[LoRA Adapters](tutorial/10-lora_adapters.md)** - Parameter-efficient fine-tuning
+- **[Adapter Switching](tutorial/11-adapter_switching.md)** - Switch between domain adapters
+
 ## 🎯 Core Capabilities
 
 ### 1. Entity Extraction
@@ -85,6 +104,50 @@ entities = extractor.extract_entities(
     }
 )
 # Same output but with higher accuracy due to context descriptions
+
+# With confidence scores
+entities = extractor.extract_entities(
+    "Apple Inc. CEO Tim Cook announced iPhone 15 in Cupertino.",
+    ["company", "person", "product", "location"],
+    include_confidence=True
+)
+# Output: {
+#     'entities': {
+#         'company': [{'text': 'Apple Inc.', 'confidence': 0.95}],
+#         'person': [{'text': 'Tim Cook', 'confidence': 0.92}],
+#         'product': [{'text': 'iPhone 15', 'confidence': 0.88}],
+#         'location': [{'text': 'Cupertino', 'confidence': 0.90}]
+#     }
+# }
+
+# With character positions (spans)
+entities = extractor.extract_entities(
+    "Apple Inc. CEO Tim Cook announced iPhone 15 in Cupertino.",
+    ["company", "person", "product"],
+    include_spans=True
+)
+# Output: {
+#     'entities': {
+#         'company': [{'text': 'Apple Inc.', 'start': 0, 'end': 9}],
+#         'person': [{'text': 'Tim Cook', 'start': 15, 'end': 23}],
+#         'product': [{'text': 'iPhone 15', 'start': 35, 'end': 44}]
+#     }
+# }
+
+# With both confidence and spans
+entities = extractor.extract_entities(
+    "Apple Inc. CEO Tim Cook announced iPhone 15 in Cupertino.",
+    ["company", "person", "product"],
+    include_confidence=True,
+    include_spans=True
+)
+# Output: {
+#     'entities': {
+#         'company': [{'text': 'Apple Inc.', 'confidence': 0.95, 'start': 0, 'end': 9}],
+#         'person': [{'text': 'Tim Cook', 'confidence': 0.92, 'start': 15, 'end': 23}],
+#         'product': [{'text': 'iPhone 15', 'confidence': 0.88, 'start': 35, 'end': 44}]
+#     }
+# }
 ```
 
 ### 2. Text Classification
@@ -110,6 +173,31 @@ result = extractor.classify_text(
     }
 )
 # Output: {'aspects': ['camera', 'performance', 'battery']}
+
+# With confidence scores
+result = extractor.classify_text(
+    "This laptop has amazing performance but terrible battery life!",
+    {"sentiment": ["positive", "negative", "neutral"]},
+    include_confidence=True
+)
+# Output: {'sentiment': {'label': 'negative', 'confidence': 0.82}}
+
+# Multi-label with confidence
+schema = extractor.create_schema().classification(
+    "topics",
+    ["technology", "business", "health", "politics", "sports"],
+    multi_label=True,
+    cls_threshold=0.3
+)
+text = "Apple announced new health monitoring features in their latest smartwatch, boosting their stock price."
+results = extractor.extract(text, schema, include_confidence=True)
+# Output: {
+#     'topics': [
+#         {'label': 'technology', 'confidence': 0.92},
+#         {'label': 'business', 'confidence': 0.78},
+#         {'label': 'health', 'confidence': 0.65}
+#     ]
+# }
 ```
 
 ### 3. Structured Data Extraction
@@ -164,6 +252,73 @@ result = extractor.extract_json(
 #         {'name': 'MacBook Air', 'price': '$1299'}
 #     ]
 # }
+
+# With confidence scores
+result = extractor.extract_json(
+    "The MacBook Pro costs $1999 and features M3 chip, 16GB RAM, and 512GB storage.",
+    {
+        "product": [
+            "name::str",
+            "price",
+            "features"
+        ]
+    },
+    include_confidence=True
+)
+# Output: {
+#     'product': [{
+#         'name': {'text': 'MacBook Pro', 'confidence': 0.95},
+#         'price': [{'text': '$1999', 'confidence': 0.92}],
+#         'features': [
+#             {'text': 'M3 chip', 'confidence': 0.88},
+#             {'text': '16GB RAM', 'confidence': 0.90},
+#             {'text': '512GB storage', 'confidence': 0.87}
+#         ]
+#     }]
+# }
+
+# With character positions (spans)
+result = extractor.extract_json(
+    "The MacBook Pro costs $1999 and features M3 chip.",
+    {
+        "product": [
+            "name::str",
+            "price"
+        ]
+    },
+    include_spans=True
+)
+# Output: {
+#     'product': [{
+#         'name': {'text': 'MacBook Pro', 'start': 4, 'end': 15},
+#         'price': [{'text': '$1999', 'start': 22, 'end': 27}]
+#     }]
+# }
+
+# With both confidence and spans
+result = extractor.extract_json(
+    "The MacBook Pro costs $1999 and features M3 chip, 16GB RAM, and 512GB storage.",
+    {
+        "product": [
+            "name::str",
+            "price",
+            "features"
+        ]
+    },
+    include_confidence=True,
+    include_spans=True
+)
+# Output: {
+#     'product': [{
+#         'name': {'text': 'MacBook Pro', 'confidence': 0.95, 'start': 4, 'end': 15},
+#         'price': [{'text': '$1999', 'confidence': 0.92, 'start': 22, 'end': 27}],
+#         'features': [
+#             {'text': 'M3 chip', 'confidence': 0.88, 'start': 32, 'end': 39},
+#             {'text': '16GB RAM', 'confidence': 0.90, 'start': 41, 'end': 49},
+#             {'text': '512GB storage', 'confidence': 0.87, 'start': 55, 'end': 68}
+#         ]
+#     }]
+# }
 ```
 
 ### 4. Relation Extraction
@@ -199,6 +354,64 @@ results = extractor.extract(text, schema)
 #     'relation_extraction': {
 #         'founded': [('Elon Musk', 'SpaceX')],
 #         'located_in': [('SpaceX', 'Hawthorne, California')]
+#     }
+# }
+
+# With confidence scores
+results = extractor.extract_relations(
+    "John works for Apple Inc. and lives in San Francisco.",
+    ["works_for", "lives_in"],
+    include_confidence=True
+)
+# Output: {
+#     'relation_extraction': {
+#         'works_for': [{
+#             'head': {'text': 'John', 'confidence': 0.95},
+#             'tail': {'text': 'Apple Inc.', 'confidence': 0.92}
+#         }],
+#         'lives_in': [{
+#             'head': {'text': 'John', 'confidence': 0.94},
+#             'tail': {'text': 'San Francisco', 'confidence': 0.91}
+#         }]
+#     }
+# }
+
+# With character positions (spans)
+results = extractor.extract_relations(
+    "John works for Apple Inc. and lives in San Francisco.",
+    ["works_for", "lives_in"],
+    include_spans=True
+)
+# Output: {
+#     'relation_extraction': {
+#         'works_for': [{
+#             'head': {'text': 'John', 'start': 0, 'end': 4},
+#             'tail': {'text': 'Apple Inc.', 'start': 15, 'end': 25}
+#         }],
+#         'lives_in': [{
+#             'head': {'text': 'John', 'start': 0, 'end': 4},
+#             'tail': {'text': 'San Francisco', 'start': 33, 'end': 46}
+#         }]
+#     }
+# }
+
+# With both confidence and spans
+results = extractor.extract_relations(
+    "John works for Apple Inc. and lives in San Francisco.",
+    ["works_for", "lives_in"],
+    include_confidence=True,
+    include_spans=True
+)
+# Output: {
+#     'relation_extraction': {
+#         'works_for': [{
+#             'head': {'text': 'John', 'confidence': 0.95, 'start': 0, 'end': 4},
+#             'tail': {'text': 'Apple Inc.', 'confidence': 0.92, 'start': 15, 'end': 25}
+#         }],
+#         'lives_in': [{
+#             'head': {'text': 'John', 'confidence': 0.94, 'start': 0, 'end': 4},
+#             'tail': {'text': 'San Francisco', 'confidence': 0.91, 'start': 33, 'end': 46}
+#         }]
 #     }
 # }
 ```
@@ -465,6 +678,315 @@ result = extractor.extract_json(
 #     }]
 # }
 ```
+
+## 🔍 Regex Validators
+
+Filter extracted spans to ensure they match expected patterns, improving extraction quality and reducing false positives.
+
+```python
+from gliner2 import GLiNER2, RegexValidator
+
+extractor = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
+
+# Email validation
+email_validator = RegexValidator(r"^[\w\.-]+@[\w\.-]+\.\w+$")
+schema = (extractor.create_schema()
+    .structure("contact")
+        .field("email", dtype="str", validators=[email_validator])
+)
+
+text = "Contact: john@company.com, not-an-email, jane@domain.org"
+results = extractor.extract(text, schema)
+# Output: {'contact': [{'email': 'john@company.com'}]}  # Only valid emails
+
+# Phone number validation (US format)
+phone_validator = RegexValidator(r"\(\d{3}\)\s\d{3}-\d{4}", mode="partial")
+schema = (extractor.create_schema()
+    .structure("contact")
+        .field("phone", dtype="str", validators=[phone_validator])
+)
+
+text = "Call (555) 123-4567 or 5551234567"
+results = extractor.extract(text, schema)
+# Output: {'contact': [{'phone': '(555) 123-4567'}]}  # Second number filtered out
+
+# URL validation
+url_validator = RegexValidator(r"^https?://", mode="partial")
+schema = (extractor.create_schema()
+    .structure("links")
+        .field("url", dtype="list", validators=[url_validator])
+)
+
+text = "Visit https://example.com or www.site.com"
+results = extractor.extract(text, schema)
+# Output: {'links': [{'url': ['https://example.com']}]}  # www.site.com filtered out
+
+# Exclude test data
+import re
+no_test_validator = RegexValidator(r"^(test|demo|sample)", exclude=True, flags=re.IGNORECASE)
+schema = (extractor.create_schema()
+    .structure("products")
+        .field("name", dtype="list", validators=[no_test_validator])
+)
+
+text = "Products: iPhone, Test Phone, Samsung Galaxy"
+results = extractor.extract(text, schema)
+# Output: {'products': [{'name': ['iPhone', 'Samsung Galaxy']}]}  # Test Phone excluded
+
+# Multiple validators (all must pass)
+username_validators = [
+    RegexValidator(r"^[a-zA-Z0-9_]+$"),  # Alphanumeric + underscore
+    RegexValidator(r"^.{3,20}$"),        # 3-20 characters
+    RegexValidator(r"^(?!admin)", exclude=True, flags=re.IGNORECASE)  # No "admin"
+]
+
+schema = (extractor.create_schema()
+    .structure("user")
+        .field("username", dtype="str", validators=username_validators)
+)
+
+text = "Users: ab, john_doe, user@domain, admin, valid_user123"
+results = extractor.extract(text, schema)
+# Output: {'user': [{'username': 'john_doe'}]}  # Only valid usernames
+```
+
+## 📦 Batch Processing
+
+Process multiple texts efficiently in a single call:
+
+```python
+# Batch entity extraction
+texts = [
+    "Google's Sundar Pichai unveiled Gemini AI in Mountain View.",
+    "Microsoft CEO Satya Nadella announced Copilot at Build 2023.",
+    "Amazon's Andy Jassy revealed new AWS services in Seattle."
+]
+
+results = extractor.batch_extract_entities(
+    texts,
+    ["company", "person", "product", "location"],
+    batch_size=8
+)
+# Returns list of results, one per input text
+
+# Batch relation extraction
+texts = [
+    "John works for Microsoft and lives in Seattle.",
+    "Sarah founded TechStartup in 2020.",
+    "Bob reports to Alice at Google."
+]
+
+results = extractor.batch_extract_relations(
+    texts,
+    ["works_for", "founded", "reports_to", "lives_in"],
+    batch_size=8
+)
+# Returns list of relation extraction results for each text
+# All requested relation types appear in each result, even if empty
+
+# Batch with confidence and spans
+results = extractor.batch_extract_entities(
+    texts,
+    ["company", "person"],
+    include_confidence=True,
+    include_spans=True,
+    batch_size=8
+)
+```
+
+## 🎓 Training Custom Models
+
+Train GLiNER2 on your own data to specialize for your domain or use case.
+
+### Quick Start Training
+
+```python
+from gliner2 import GLiNER2
+from gliner2.training.data import InputExample
+from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
+
+# 1. Prepare training data
+examples = [
+    InputExample(
+        text="John works at Google in California.",
+        entities={"person": ["John"], "company": ["Google"], "location": ["California"]}
+    ),
+    InputExample(
+        text="Apple released iPhone 15.",
+        entities={"company": ["Apple"], "product": ["iPhone 15"]}
+    ),
+    # Add more examples...
+]
+
+# 2. Configure training
+model = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
+config = TrainingConfig(
+    output_dir="./output",
+    num_epochs=10,
+    batch_size=8,
+    encoder_lr=1e-5,
+    task_lr=5e-4
+)
+
+# 3. Train
+trainer = GLiNER2Trainer(model, config)
+trainer.train(train_data=examples)
+```
+
+### Training Data Format (JSONL)
+
+GLiNER2 uses JSONL format where each line contains an `input` and `output` field:
+
+```jsonl
+{"input": "Tim Cook is the CEO of Apple Inc., based in Cupertino, California.", "output": {"entities": {"person": ["Tim Cook"], "company": ["Apple Inc."], "location": ["Cupertino", "California"]}, "entity_descriptions": {"person": "Full name of a person", "company": "Business organization name", "location": "Geographic location or place"}}}
+{"input": "OpenAI released GPT-4 in March 2023.", "output": {"entities": {"company": ["OpenAI"], "model": ["GPT-4"], "date": ["March 2023"]}}}
+```
+
+**Classification Example:**
+```jsonl
+{"input": "This movie is absolutely fantastic! I loved every minute of it.", "output": {"classifications": [{"task": "sentiment", "labels": ["positive", "negative", "neutral"], "true_label": ["positive"]}]}}
+{"input": "The service was terrible and the food was cold.", "output": {"classifications": [{"task": "sentiment", "labels": ["positive", "negative", "neutral"], "true_label": ["negative"]}]}}
+```
+
+**Structured Extraction Example:**
+```jsonl
+{"input": "iPhone 15 Pro Max with 256GB storage, priced at $1199.", "output": {"json_structures": [{"product": {"name": "iPhone 15 Pro Max", "storage": "256GB", "price": "$1199"}}]}}
+```
+
+**Relation Extraction Example:**
+```jsonl
+{"input": "John works for Apple Inc. and lives in San Francisco.", "output": {"relations": [{"works_for": {"head": "John", "tail": "Apple Inc."}}, {"lives_in": {"head": "John", "tail": "San Francisco"}}]}}
+```
+
+### Training from JSONL File
+
+```python
+from gliner2 import GLiNER2
+from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
+
+# Load model and train from JSONL file
+model = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
+config = TrainingConfig(output_dir="./output", num_epochs=10)
+
+trainer = GLiNER2Trainer(model, config)
+trainer.train(train_data="train.jsonl")  # Path to your JSONL file
+```
+
+### LoRA Training (Parameter-Efficient Fine-Tuning)
+
+Train lightweight adapters for domain-specific tasks:
+
+```python
+from gliner2 import GLiNER2
+from gliner2.training.data import InputExample
+from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
+
+# Prepare domain-specific data
+legal_examples = [
+    InputExample(
+        text="Apple Inc. filed a lawsuit against Samsung Electronics.",
+        entities={"company": ["Apple Inc.", "Samsung Electronics"]}
+    ),
+    # Add more examples...
+]
+
+# Configure LoRA training
+model = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
+config = TrainingConfig(
+    output_dir="./legal_adapter",
+    num_epochs=10,
+    batch_size=8,
+    encoder_lr=1e-5,
+    task_lr=5e-4,
+    
+    # LoRA settings
+    use_lora=True,                    # Enable LoRA
+    lora_r=8,                         # Rank (4, 8, 16, 32)
+    lora_alpha=16.0,                  # Scaling factor (usually 2*r)
+    lora_dropout=0.0,                 # Dropout for LoRA layers
+    save_adapter_only=True            # Save only adapter (~5MB vs ~450MB)
+)
+
+# Train adapter
+trainer = GLiNER2Trainer(model, config)
+trainer.train(train_data=legal_examples)
+
+# Use the adapter
+model.load_adapter("./legal_adapter/final")
+results = model.extract_entities(legal_text, ["company", "law"])
+```
+
+**Benefits of LoRA:**
+- **Smaller size**: Adapters are ~2-10 MB vs ~450 MB for full models
+- **Faster training**: 2-3x faster than full fine-tuning
+- **Easy switching**: Swap adapters in milliseconds for different domains
+
+### Complete Training Example
+
+```python
+from gliner2 import GLiNER2
+from gliner2.training.data import InputExample, TrainingDataset
+from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
+
+# Prepare training data
+train_examples = [
+    InputExample(
+        text="Tim Cook is the CEO of Apple Inc., based in Cupertino, California.",
+        entities={
+            "person": ["Tim Cook"],
+            "company": ["Apple Inc."],
+            "location": ["Cupertino", "California"]
+        },
+        entity_descriptions={
+            "person": "Full name of a person",
+            "company": "Business organization name",
+            "location": "Geographic location or place"
+        }
+    ),
+    # Add more examples...
+]
+
+# Create and validate dataset
+train_dataset = TrainingDataset(train_examples)
+train_dataset.validate(strict=True, raise_on_error=True)
+train_dataset.print_stats()
+
+# Split into train/validation
+train_data, val_data, _ = train_dataset.split(
+    train_ratio=0.8,
+    val_ratio=0.2,
+    test_ratio=0.0,
+    shuffle=True,
+    seed=42
+)
+
+# Configure training
+model = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
+config = TrainingConfig(
+    output_dir="./ner_model",
+    experiment_name="ner_training",
+    num_epochs=15,
+    batch_size=16,
+    encoder_lr=1e-5,
+    task_lr=5e-4,
+    warmup_ratio=0.1,
+    scheduler_type="cosine",
+    fp16=True,
+    eval_strategy="epoch",
+    save_best=True,
+    early_stopping=True,
+    early_stopping_patience=3
+)
+
+# Train
+trainer = GLiNER2Trainer(model, config)
+trainer.train(train_data=train_data, val_data=val_data)
+
+# Load best model
+model = GLiNER2.from_pretrained("./ner_model/best")
+```
+
+For more details, see the [Training Tutorial](tutorial/9-training.md) and [Data Format Guide](tutorial/8-train_data.md).
 
 ## 📄 License
 
