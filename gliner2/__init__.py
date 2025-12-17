@@ -1,4 +1,4 @@
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 from .inference.engine import GLiNER2, RegexValidator
 from .model import Extractor, ExtractorConfig
