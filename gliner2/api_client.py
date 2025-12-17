@@ -352,6 +352,7 @@ class GLiNER2API:
         schema: Union[List[str], Dict],
         threshold: float = 0.5,
         include_confidence: bool = False,
+        include_spans: bool = False,
         format_results: bool = True,
     ) -> Dict[str, Any]:
         """
@@ -363,6 +364,7 @@ class GLiNER2API:
             schema: Schema for extraction
             threshold: Confidence threshold
             include_confidence: Whether to include confidence scores in results
+            include_spans: Whether to include character-level start/end positions
             format_results: Whether to format results (False for raw extraction data)
         
         Returns:
@@ -381,6 +383,7 @@ class GLiNER2API:
             "schema": schema,
             "threshold": threshold,
             "include_confidence": include_confidence,
+            "include_spans": include_spans,
             "format_results": format_results,
         }
         
@@ -464,7 +467,8 @@ class GLiNER2API:
         entity_types: Union[List[str], Dict[str, Union[str, Dict]]],
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> Dict[str, Any]:
         """
         Extract entities from text.
@@ -475,10 +479,12 @@ class GLiNER2API:
             threshold: Minimum confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores in results.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             Dictionary with "entities" key containing extracted entities.
             If include_confidence=True, entity values include confidence scores.
+            If include_spans=True, entity values include start/end positions.
             If format_results=False, returns raw extraction data with positions.
         """
         # Normalize entity types to list
@@ -493,6 +499,7 @@ class GLiNER2API:
             schema=entities,
             threshold=threshold,
             include_confidence=include_confidence,
+            include_spans=include_spans,
             format_results=format_results,
         )
         
@@ -508,7 +515,8 @@ class GLiNER2API:
         batch_size: int = 8,
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Batch extract entities from multiple texts.
@@ -520,10 +528,12 @@ class GLiNER2API:
             threshold: Minimum confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             List of dictionaries with "entities" key.
             If include_confidence=True, entity values include confidence scores.
+            If include_spans=True, entity values include start/end positions.
             If format_results=False, returns raw extraction data with positions.
         """
         # Normalize entity types to list
@@ -538,6 +548,7 @@ class GLiNER2API:
             schema=entities,
             threshold=threshold,
             include_confidence=include_confidence,
+            include_spans=include_spans,
             format_results=format_results,
         )
         
@@ -556,7 +567,8 @@ class GLiNER2API:
         tasks: Dict[str, Union[List[str], Dict[str, Any]]],
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> Dict[str, Any]:
         """
         Classify text into categories.
@@ -567,6 +579,7 @@ class GLiNER2API:
             threshold: Confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             Classification results keyed by task name.
@@ -592,6 +605,7 @@ class GLiNER2API:
                 schema={"categories": categories},
                 threshold=threshold,
                 include_confidence=include_confidence,
+                include_spans=include_spans,
                 format_results=format_results,
             )
             
@@ -608,6 +622,7 @@ class GLiNER2API:
                 schema=schema,
                 threshold=threshold,
                 include_confidence=include_confidence,
+                include_spans=include_spans,
                 format_results=format_results,
             )
             return result
@@ -619,7 +634,8 @@ class GLiNER2API:
         batch_size: int = 8,
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Batch classify multiple texts.
@@ -631,6 +647,7 @@ class GLiNER2API:
             threshold: Confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             List of classification results.
@@ -645,6 +662,7 @@ class GLiNER2API:
             schema=schema,
             threshold=threshold,
             include_confidence=include_confidence,
+            include_spans=include_spans,
             format_results=format_results,
         )
         
@@ -662,7 +680,8 @@ class GLiNER2API:
         structures: Dict[str, List[str]],
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> Dict[str, Any]:
         """
         Extract structured data from text.
@@ -673,10 +692,12 @@ class GLiNER2API:
             threshold: Minimum confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             Extracted structures keyed by structure name.
             If include_confidence=True, field values include confidence scores.
+            If include_spans=True, field values include start/end positions.
             If format_results=False, returns raw extraction data with positions.
         """
         result = self._make_request(
@@ -685,6 +706,7 @@ class GLiNER2API:
             schema=structures,
             threshold=threshold,
             include_confidence=include_confidence,
+            include_spans=include_spans,
             format_results=format_results,
         )
         return result
@@ -696,7 +718,8 @@ class GLiNER2API:
         batch_size: int = 8,
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Batch extract structured data from multiple texts.
@@ -708,10 +731,12 @@ class GLiNER2API:
             threshold: Confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             List of extracted structures.
             If include_confidence=True, field values include confidence scores.
+            If include_spans=True, field values include start/end positions.
             If format_results=False, returns raw extraction data with positions.
         """
         result = self._make_request(
@@ -720,6 +745,7 @@ class GLiNER2API:
             schema=structures,
             threshold=threshold,
             include_confidence=include_confidence,
+            include_spans=include_spans,
             format_results=format_results,
         )
         
@@ -737,7 +763,8 @@ class GLiNER2API:
         relation_types: Union[str, List[str], Dict[str, Union[str, Dict]]],
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> Dict[str, Any]:
         """
         Extract relations between entities from text.
@@ -752,6 +779,7 @@ class GLiNER2API:
             threshold: Minimum confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores in results.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             Dictionary with "relation_extraction" key containing extracted relations.
@@ -767,6 +795,7 @@ class GLiNER2API:
             schema=schema,
             threshold=threshold,
             include_confidence=include_confidence,
+            include_spans=include_spans,
             format_results=format_results,
         )
         
@@ -779,7 +808,8 @@ class GLiNER2API:
         batch_size: int = 8,
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Batch extract relations from multiple texts.
@@ -791,6 +821,7 @@ class GLiNER2API:
             threshold: Minimum confidence threshold.
             format_results: Whether to format results.
             include_confidence: Whether to include confidence scores.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             List of dictionaries with "relation_extraction" key.
@@ -805,6 +836,7 @@ class GLiNER2API:
             schema=schema,
             threshold=threshold,
             include_confidence=include_confidence,
+            include_spans=include_spans,
             format_results=format_results,
         )
         
@@ -823,7 +855,8 @@ class GLiNER2API:
         schema: Union[SchemaAPI, Dict[str, Any]],
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> Dict[str, Any]:
         """
         Extract information from text using a schema.
@@ -834,10 +867,12 @@ class GLiNER2API:
             threshold: Minimum confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             Extraction results organized by task name.
             If include_confidence=True, values include confidence scores.
+            If include_spans=True, values include start/end positions.
             If format_results=False, returns raw extraction data with positions.
         """
         # Build schema dict if needed
@@ -862,6 +897,7 @@ class GLiNER2API:
                 schema=schema_dict,
                 threshold=threshold,
                 include_confidence=include_confidence,
+                include_spans=include_spans,
                 format_results=format_results,
             )
         
@@ -872,6 +908,7 @@ class GLiNER2API:
                 schema_dict["entities"],
                 threshold=threshold,
                 include_confidence=include_confidence,
+                include_spans=include_spans,
                 format_results=format_results,
             )
         elif has_classifications:
@@ -880,6 +917,7 @@ class GLiNER2API:
                 schema_dict["classifications"],
                 threshold=threshold,
                 include_confidence=include_confidence,
+                include_spans=include_spans,
                 format_results=format_results,
             )
         elif has_structures:
@@ -888,6 +926,7 @@ class GLiNER2API:
                 schema_dict["structures"],
                 threshold=threshold,
                 include_confidence=include_confidence,
+                include_spans=include_spans,
                 format_results=format_results,
             )
         elif has_relations:
@@ -898,6 +937,7 @@ class GLiNER2API:
                 schema=schema_dict,
                 threshold=threshold,
                 include_confidence=include_confidence,
+                include_spans=include_spans,
                 format_results=format_results,
             )
         else:
@@ -910,7 +950,8 @@ class GLiNER2API:
         batch_size: int = 8,
         threshold: float = 0.5,
         format_results: bool = True,
-        include_confidence: bool = False
+        include_confidence: bool = False,
+        include_spans: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Extract information from multiple texts.
@@ -922,10 +963,12 @@ class GLiNER2API:
             threshold: Confidence threshold.
             format_results: Whether to format results. If False, returns raw extraction data.
             include_confidence: Whether to include confidence scores.
+            include_spans: Whether to include character-level start/end positions.
         
         Returns:
             List of extraction results.
             If include_confidence=True, values include confidence scores.
+            If include_spans=True, values include start/end positions.
             If format_results=False, returns raw extraction data with positions.
         """
         if not texts:
@@ -948,7 +991,7 @@ class GLiNER2API:
             # Process each text with its schema individually
             results = []
             for text, schema in zip(texts, schemas):
-                results.append(self.extract(text, schema, threshold, include_confidence=include_confidence, format_results=format_results))
+                results.append(self.extract(text, schema, threshold, include_confidence=include_confidence, include_spans=include_spans, format_results=format_results))
             return results
         
         # Single schema for all texts
@@ -965,6 +1008,7 @@ class GLiNER2API:
             schema=schema_dict,
             threshold=threshold,
             include_confidence=include_confidence,
+            include_spans=include_spans,
             format_results=format_results,
         )
     
