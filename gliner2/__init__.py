@@ -1,7 +1,8 @@
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 
 from .inference.engine import GLiNER2, RegexValidator
 from .model import Extractor, ExtractorConfig
+from .verifiers import RelationVerifier, RelationVerifierModel, VerifierConfig
 from .api_client import (
     GLiNER2API,
     GLiNER2APIError,

@@ -303,6 +303,31 @@ class GLiNER2(Extractor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._schema_cache = {}
+        self._relation_verifier = None
+
+    def set_relation_verifier(self, verifier, threshold: float = None):
+        """
+        Attach a relation verifier for filtering false positives.
+
+        Args:
+            verifier: RelationVerifier instance or HuggingFace model ID string
+            threshold: Optional threshold override (default: verifier's threshold)
+
+        Example:
+            >>> from gliner2.verifiers import RelationVerifier
+            >>> verifier = RelationVerifier.from_pretrained("oneryalcin/gliner2-relation-verifier")
+            >>> model.set_relation_verifier(verifier)
+        """
+        if isinstance(verifier, str):
+            from gliner2.verifiers import RelationVerifier
+            verifier = RelationVerifier.from_pretrained(verifier, threshold=threshold or 0.55)
+        if threshold is not None:
+            verifier.set_threshold(threshold)
+        self._relation_verifier = verifier
+
+    def remove_relation_verifier(self):
+        """Remove the attached relation verifier."""
+        self._relation_verifier = None
 
     @classmethod
     def from_api(cls, api_key: str = None, api_base_url: str = None,
@@ -1217,10 +1242,37 @@ class GLiNER2(Extractor):
 
     def extract_relations(self, text: str, relation_types, threshold: float = 0.5,
                          format_results: bool = True, include_confidence: bool = False,
-                         include_spans: bool = False) -> Dict:
-        """Extract relations."""
+                         include_spans: bool = False, verify: bool = True) -> Dict:
+        """
+        Extract relations from text.
+
+        Args:
+            text: Input text
+            relation_types: List of relation types to extract
+            threshold: Confidence threshold for extraction
+            format_results: Format output nicely
+            include_confidence: Include confidence scores
+            include_spans: Include character-level positions (required for verification)
+            verify: If True and verifier is attached, filter false positives
+
+        Returns:
+            Dict with 'relation_extraction' key containing extracted relations
+        """
+        # Force include_spans if verifier is attached and verify=True
+        use_verifier = verify and self._relation_verifier is not None
+        if use_verifier:
+            include_spans = True
+
         schema = self.create_schema().relations(relation_types)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        result = self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+
+        # Apply verifier if attached
+        if use_verifier and "relation_extraction" in result:
+            result["relation_extraction"] = self._relation_verifier.verify(
+                text, result["relation_extraction"], return_scores=True
+            )
+
+        return result
 
     def batch_extract_relations(self, texts: List[str], relation_types, batch_size: int = 8,
                                threshold: float = 0.5, format_results: bool = True,
