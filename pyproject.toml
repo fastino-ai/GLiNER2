@@ -19,6 +19,7 @@ maintainers = [
 
 dependencies = [
     "gliner",
+    "pydantic>=2.0.0",
 ]
 
 dynamic = ["version"]
