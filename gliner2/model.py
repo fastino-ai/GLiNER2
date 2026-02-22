@@ -7,6 +7,7 @@ directly for efficient GPU-only forward passes.
 
 import os
 import tempfile
+import copy
 from typing import Dict, List, Any, Optional, Tuple
 
 import torch
@@ -23,6 +24,22 @@ from transformers import (
     AutoConfig,
     AutoTokenizer,
 )
+
+
+_encoder_cache = {}
+
+
+def _get_cached_encoder(encoder_config):
+    model_name = getattr(encoder_config, "_name_or_path", None) or getattr(
+        encoder_config, "model_type", None
+    )
+    cache_key = f"{model_name}_{encoder_config.hidden_size}"
+
+    if cache_key not in _encoder_cache:
+        _encoder_cache[cache_key] = AutoModel.from_config(
+            encoder_config, trust_remote_code=True
+        )
+    return _encoder_cache[cache_key]
 
 
 class ExtractorConfig(PretrainedConfig):
@@ -62,8 +79,11 @@ class Extractor(PreTrainedModel):
         ...     loss = model(batch)["total_loss"]
     """
     config_class = ExtractorConfig
+    _model_cache = {}
 
-    def __init__(self, config: ExtractorConfig, encoder_config=None, tokenizer=None):
+    def __init__(
+        self, config: ExtractorConfig, encoder_config=None, tokenizer=None, encoder=None
+    ):
         super().__init__(config)
         self.config = config
         self.max_width = config.max_width
@@ -81,8 +101,10 @@ class Extractor(PreTrainedModel):
             )
 
         # Load encoder
-        if encoder_config is not None:
-            self.encoder = AutoModel.from_config(encoder_config, trust_remote_code=True)
+        if encoder is not None:
+            self.encoder = encoder
+        elif encoder_config is not None:
+            self.encoder = _get_cached_encoder(encoder_config)
         else:
             self.encoder = AutoModel.from_pretrained(config.model_name, trust_remote_code=True)
 
@@ -520,26 +542,42 @@ class Extractor(PreTrainedModel):
         """
         from huggingface_hub import hf_hub_download
 
-        def download_or_local(repo, filename):
+        cache_key = repo_or_dir
+        if cache_key in cls._model_cache:
+            cached_model = cls._model_cache[cache_key]
+            return copy.deepcopy(cached_model)
+
+        local_files_only = kwargs.pop("local_files_only", True)
+
+        def get_local_path(repo, filename):
             if os.path.isdir(repo):
-                return os.path.join(repo, filename)
+                path = os.path.join(repo, filename)
+                if os.path.exists(path):
+                    return path
+            if local_files_only:
+                cached = hf_hub_download(
+                    repo, filename, cache_dir=None, local_files_only=True
+                )
+                return cached if cached else hf_hub_download(repo, filename)
             return hf_hub_download(repo, filename)
 
-        config_path = download_or_local(repo_or_dir, "config.json")
+        config_path = get_local_path(repo_or_dir, "config.json")
         config = cls.config_class.from_pretrained(config_path)
 
-        encoder_config_path = download_or_local(repo_or_dir, "encoder_config/config.json")
+        encoder_config_path = get_local_path(repo_or_dir, "encoder_config/config.json")
         encoder_config = AutoConfig.from_pretrained(encoder_config_path)
 
-        tokenizer = AutoTokenizer.from_pretrained(repo_or_dir)
+        tokenizer = AutoTokenizer.from_pretrained(
+            repo_or_dir, local_files_only=local_files_only
+        )
         model = cls(config, encoder_config=encoder_config, tokenizer=tokenizer)
 
         # Load weights
         try:
-            model_path = download_or_local(repo_or_dir, "model.safetensors")
+            model_path = get_local_path(repo_or_dir, "model.safetensors")
             state_dict = load_file(model_path)
         except Exception:
-            model_path = download_or_local(repo_or_dir, "pytorch_model.bin")
+            model_path = get_local_path(repo_or_dir, "pytorch_model.bin")
             state_dict = torch.load(model_path, map_location="cpu")
 
         # Handle embedding size mismatch
@@ -556,6 +594,7 @@ class Extractor(PreTrainedModel):
             pass
 
         model.load_state_dict(state_dict)
+        cls._model_cache[cache_key] = model
         return model
 
     def load_adapter(self, adapter_path: str) -> 'Extractor':
