@@ -19,6 +19,7 @@ maintainers = [
 
 dependencies = [
     "gliner",
+    "requests"
 ]
 
 dynamic = ["version"]
