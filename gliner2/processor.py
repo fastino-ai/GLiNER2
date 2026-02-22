@@ -210,6 +210,17 @@ class SchemaTransformer:
             "additional_special_tokens": self.SPECIAL_TOKENS
         })
 
+        # OPT-1: Pre-compute special token IDs for fast lookup in embedding extraction
+        self._special_ids = frozenset(
+            self.tokenizer.convert_tokens_to_ids(t)
+            for t in (self.P_TOKEN, self.C_TOKEN, self.E_TOKEN, self.R_TOKEN, self.L_TOKEN)
+        )
+
+        # OPT-6: Cache tokenized forms of special tokens and common punctuation
+        self._token_cache = {}
+        for tok in self.SPECIAL_TOKENS + ["(", ")", ",", "|"]:
+            self._token_cache[tok] = self.tokenizer.tokenize(tok)
+
     def change_mode(self, is_training: bool):
         """Switch between training and inference mode."""
         self.is_training = is_training
@@ -277,7 +288,7 @@ class SchemaTransformer:
         Returns:
             TransformedRecord ready for batching
         """
-        record = {"text": text, "schema": schema}
+        record = {"text": text, "schema": copy.deepcopy(schema)}
         return self._transform_record(record)
 
     # =========================================================================
@@ -317,8 +328,9 @@ class SchemaTransformer:
 
     def _transform_record(self, record: Dict[str, Any]) -> TransformedRecord:
         """Transform a single record (internal)."""
-        record_ = copy.deepcopy(record)
-        text, schema = record_["text"], record_["schema"]
+        # OPT-4: Caller (_collate_batch) already deepcopies the schema.
+        # Only deepcopy here for direct callers (transform_and_format).
+        text, schema = record["text"], record["schema"]
 
         # Build classification prefix
         prefix = self._build_classification_prefix(schema)
@@ -964,7 +976,11 @@ class SchemaTransformer:
                 seg_type = "text"
                 schema_idx = text_schema_idx
 
-            sub_tokens = self.tokenizer.tokenize(token)
+            # OPT-6: Use cached tokenizations for special tokens and punctuation
+            if token in self._token_cache:
+                sub_tokens = self._token_cache[token]
+            else:
+                sub_tokens = self.tokenizer.tokenize(token)
             subwords.extend(sub_tokens)
             mappings.extend([(seg_type, orig_idx, schema_idx)] * len(sub_tokens))
 
@@ -1001,7 +1017,8 @@ class SchemaTransformer:
         all_token_embs = []
         all_schema_embs = []
 
-        special_set = {self.P_TOKEN, self.C_TOKEN, self.E_TOKEN, self.R_TOKEN, self.L_TOKEN}
+        # OPT-1: Use pre-computed special token IDs instead of string comparison
+        special_ids = self._special_ids
 
         for i in range(len(batch)):
             seq_len = batch.original_lengths[i]
@@ -1020,8 +1037,7 @@ class SchemaTransformer:
                 emb = embs[j]
 
                 if seg_type == "schema":
-                    tok = self.tokenizer.convert_ids_to_tokens(tid)
-                    if tok in special_set:
+                    if tid in special_ids:
                         schema_embs[schema_idx].append(emb)
 
                 elif seg_type == "text":
@@ -1043,6 +1059,9 @@ class SchemaTransformer:
 
     def _aggregate(self, pieces: List[torch.Tensor]) -> torch.Tensor:
         """Aggregate subword embeddings."""
+        # OPT-10: Short-circuit for single subword tokens (common case)
+        if len(pieces) == 1:
+            return pieces[0]
         if self.token_pooling == "first":
             return pieces[0]
         stack = torch.stack(pieces)

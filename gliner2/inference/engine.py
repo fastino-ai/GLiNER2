@@ -39,6 +39,7 @@ from torch.utils.data import DataLoader
 
 from gliner2.model import Extractor
 from gliner2.processor import PreprocessedBatch
+from gliner2.training.trainer import ExtractorCollator
 
 if TYPE_CHECKING:
     from gliner2.api_client import GLiNER2API
@@ -303,6 +304,8 @@ class GLiNER2(Extractor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._schema_cache = {}
+        # OPT-11: Cached collator instance for inference
+        self._inference_collator = None
 
     @classmethod
     def from_api(cls, api_key: str = None, api_base_url: str = None,
@@ -320,7 +323,7 @@ class GLiNER2(Extractor):
     # Main Batch Extraction
     # =========================================================================
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def batch_extract(
         self,
         texts: List[str],
@@ -398,36 +401,33 @@ class GLiNER2(Extractor):
             schema_dicts.append(schema_dict)
             metadata_list.append(metadata)
 
-        # Normalize texts
-        normalized = []
-        for text in texts:
-            if not text:
-                text = "."
-            elif not text.endswith(('.', '!', '?')):
-                text = text + "."
-            normalized.append(text)
+        # OPT-9: Skip duplicate normalization — _collate_batch handles it
+        dataset = list(zip(texts, schema_dicts))
 
-        # Create dataset and loader
-        dataset = list(zip(normalized, schema_dicts))
+        # OPT-11: Reuse cached collator instance
+        if self._inference_collator is None:
+            self._inference_collator = ExtractorCollator(self.processor, is_training=False)
+        collator = self._inference_collator
 
-        from gliner2.training.trainer import ExtractorCollator
-        collator = ExtractorCollator(self.processor, is_training=False)
-
-        loader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            collate_fn=collator,
-            pin_memory=True if torch.cuda.is_available() else False,
-        )
+        # OPT-12: Skip DataLoader overhead for single-batch inputs
+        if len(dataset) <= batch_size and num_workers == 0:
+            batches = [collator(dataset)]
+        else:
+            batches = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                collate_fn=collator,
+                pin_memory=True if torch.cuda.is_available() else False,
+            )
 
         # Process batches
         all_results = []
         sample_idx = 0
         device = next(self.parameters()).device
 
-        for batch in loader:
+        for batch in batches:
             batch = batch.to(device)
             batch_results = self._extract_from_batch(
                 batch, threshold, metadata_list[sample_idx:sample_idx + len(batch)],
@@ -526,7 +526,8 @@ class GLiNER2(Extractor):
                     if isinstance(fval, dict) and "choices" in fval:
                         cls_fields[f"{parent}.{fname}"] = fval["choices"]
 
-        text_len = len(self.processor._tokenize_text(original_text))
+        # OPT-3: Use start_mapping length instead of re-tokenizing text
+        text_len = len(start_mapping)
 
         for i, (schema_tokens, task_type) in enumerate(zip(schema_tokens_list, task_types)):
             if len(schema_tokens) < 4 or not schema_embs[i]:
@@ -938,7 +939,6 @@ class GLiNER2(Extractor):
 
                 if text_span:
                     conf = scores[start, width].item()
-                    # Store character positions, not token positions
                     spans.append((text_span, conf, char_start, char_end))
 
         return spans
