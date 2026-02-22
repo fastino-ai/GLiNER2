@@ -218,6 +218,7 @@ class TrainingConfig:
     max_train_samples: int = -1
     max_eval_samples: int = -1
     validate_data: bool = True
+    max_len: Optional[int] = None
 
     # LoRA Configuration (Parameter-Efficient Fine-Tuning)
     use_lora: bool = False
@@ -375,24 +376,25 @@ class ExtractorDataset(Dataset):
 class ExtractorCollator:
     """Data collator that converts raw records to model inputs."""
 
-    def __init__(self, processor: SchemaTransformer, is_training: bool = True):
+    def __init__(self, processor: SchemaTransformer, is_training: bool = True, max_len=None):
         self.processor = processor
         self.is_training = is_training
+        self.max_len = max_len
 
     def __call__(self, batch: List[Tuple[str, Dict]]):
         """
         Convert batch of (text, schema) tuples to PreprocessedBatch.
-        
+
         Args:
             batch: List of (text, schema) tuples from dataset
-            
+
         Returns:
             PreprocessedBatch ready for model.forward()
         """
         if self.is_training:
-            return self.processor.collate_fn_train(batch)
+            return self.processor.collate_fn_train(batch, max_len=self.max_len)
         else:
-            return self.processor.collate_fn_inference(batch)
+            return self.processor.collate_fn_inference(batch, max_len=self.max_len)
 
 
 # =============================================================================
@@ -798,7 +800,9 @@ class GLiNER2Trainer:
             sampler = DistributedSampler(dataset, shuffle=shuffle)
             shuffle = False
 
-        collator = ExtractorCollator(self.processor, is_training=is_training)
+        max_len = self.config.max_len or getattr(self.model.config, "max_len", None)
+        collator = ExtractorCollator(self.processor, is_training=is_training,
+                                     max_len=max_len)
         
         # Fix Bug #1 & #9: Handle small datasets
         # If dataset is smaller than batch_size, adjust to prevent empty dataloader

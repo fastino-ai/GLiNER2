@@ -35,6 +35,7 @@ class ExtractorConfig(PretrainedConfig):
             max_width: int = 8,
             counting_layer: str = "count_lstm",
             token_pooling: str = "first",
+            max_len: int = None,
             **kwargs
     ):
         super().__init__(**kwargs)
@@ -42,6 +43,7 @@ class ExtractorConfig(PretrainedConfig):
         self.max_width = max_width
         self.counting_layer = counting_layer
         self.token_pooling = token_pooling
+        self.max_len = max_len
 
 
 class Extractor(PreTrainedModel):

@@ -330,7 +330,8 @@ class GLiNER2(Extractor):
         num_workers: int = 0,
         format_results: bool = True,
         include_confidence: bool = False,
-        include_spans: bool = False
+        include_spans: bool = False,
+        max_len: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Extract from multiple texts with parallel preprocessing.
@@ -344,6 +345,11 @@ class GLiNER2(Extractor):
             format_results: Format output nicely
             include_confidence: Include confidence scores
             include_spans: Include character-level start/end positions
+            max_len: Maximum number of word tokens to process per text.
+                Tokens beyond this limit are silently dropped before the model
+                sees the input, so only entities within the first ``max_len``
+                tokens are returned.  Use this to cap memory usage on very long
+                documents.  ``None`` (default) means no truncation.
 
         Returns:
             List of extraction results
@@ -411,7 +417,7 @@ class GLiNER2(Extractor):
         dataset = list(zip(normalized, schema_dicts))
 
         from gliner2.training.trainer import ExtractorCollator
-        collator = ExtractorCollator(self.processor, is_training=False)
+        collator = ExtractorCollator(self.processor, is_training=False, max_len=max_len)
 
         loader = DataLoader(
             dataset,
@@ -1145,27 +1151,28 @@ class GLiNER2(Extractor):
 
     def extract(self, text: str, schema, threshold: float = 0.5,
                 format_results: bool = True, include_confidence: bool = False,
-                include_spans: bool = False) -> Dict:
+                include_spans: bool = False, max_len: Optional[int] = None) -> Dict:
         """Extract from single text."""
-        return self.batch_extract([text], schema, 1, threshold, 0, format_results, include_confidence, include_spans)[0]
+        return self.batch_extract([text], schema, 1, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)[0]
 
     def extract_entities(self, text: str, entity_types, threshold: float = 0.5,
                         format_results: bool = True, include_confidence: bool = False,
-                        include_spans: bool = False) -> Dict:
+                        include_spans: bool = False, max_len: Optional[int] = None) -> Dict:
         """Extract entities from text."""
         schema = self.create_schema().entities(entity_types)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans, max_len=max_len)
 
     def batch_extract_entities(self, texts: List[str], entity_types, batch_size: int = 8,
                                threshold: float = 0.5, format_results: bool = True,
-                               include_confidence: bool = False, include_spans: bool = False) -> List[Dict]:
+                               include_confidence: bool = False, include_spans: bool = False,
+                               max_len: Optional[int] = None) -> List[Dict]:
         """Batch extract entities."""
         schema = self.create_schema().entities(entity_types)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans)
+        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)
 
     def classify_text(self, text: str, tasks: Dict, threshold: float = 0.5,
                      format_results: bool = True, include_confidence: bool = False,
-                     include_spans: bool = False) -> Dict:
+                     include_spans: bool = False, max_len: Optional[int] = None) -> Dict:
         """Classify text."""
         schema = self.create_schema()
         for name, config in tasks.items():
@@ -1175,11 +1182,12 @@ class GLiNER2(Extractor):
                 schema.classification(name, labels, **cfg)
             else:
                 schema.classification(name, config)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans, max_len=max_len)
 
     def batch_classify_text(self, texts: List[str], tasks: Dict, batch_size: int = 8,
                            threshold: float = 0.5, format_results: bool = True,
-                           include_confidence: bool = False, include_spans: bool = False) -> List[Dict]:
+                           include_confidence: bool = False, include_spans: bool = False,
+                           max_len: Optional[int] = None) -> List[Dict]:
         """Batch classify texts."""
         schema = self.create_schema()
         for name, config in tasks.items():
@@ -1189,11 +1197,11 @@ class GLiNER2(Extractor):
                 schema.classification(name, labels, **cfg)
             else:
                 schema.classification(name, config)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans)
+        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)
 
     def extract_json(self, text: str, structures: Dict, threshold: float = 0.5,
                     format_results: bool = True, include_confidence: bool = False,
-                    include_spans: bool = False) -> Dict:
+                    include_spans: bool = False, max_len: Optional[int] = None) -> Dict:
         """Extract structured data."""
         schema = self.create_schema()
         for parent, fields in structures.items():
@@ -1201,11 +1209,12 @@ class GLiNER2(Extractor):
             for spec in fields:
                 name, dtype, choices, desc = self._parse_field_spec(spec)
                 builder.field(name, dtype=dtype, choices=choices, description=desc)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans, max_len=max_len)
 
     def batch_extract_json(self, texts: List[str], structures: Dict, batch_size: int = 8,
                           threshold: float = 0.5, format_results: bool = True,
-                          include_confidence: bool = False, include_spans: bool = False) -> List[Dict]:
+                          include_confidence: bool = False, include_spans: bool = False,
+                          max_len: Optional[int] = None) -> List[Dict]:
         """Batch extract structured data."""
         schema = self.create_schema()
         for parent, fields in structures.items():
@@ -1213,21 +1222,22 @@ class GLiNER2(Extractor):
             for spec in fields:
                 name, dtype, choices, desc = self._parse_field_spec(spec)
                 builder.field(name, dtype=dtype, choices=choices, description=desc)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans)
+        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)
 
     def extract_relations(self, text: str, relation_types, threshold: float = 0.5,
                          format_results: bool = True, include_confidence: bool = False,
-                         include_spans: bool = False) -> Dict:
+                         include_spans: bool = False, max_len: Optional[int] = None) -> Dict:
         """Extract relations."""
         schema = self.create_schema().relations(relation_types)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans, max_len=max_len)
 
     def batch_extract_relations(self, texts: List[str], relation_types, batch_size: int = 8,
                                threshold: float = 0.5, format_results: bool = True,
-                               include_confidence: bool = False, include_spans: bool = False) -> List[Dict]:
+                               include_confidence: bool = False, include_spans: bool = False,
+                               max_len: Optional[int] = None) -> List[Dict]:
         """Batch extract relations."""
         schema = self.create_schema().relations(relation_types)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans)
+        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)
 
     def _parse_field_spec(self, spec: Union[str, Dict]) -> Tuple[str, str, Optional[List[str]], Optional[str]]:
         """Parse field specification string or dictionary.

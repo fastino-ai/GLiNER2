@@ -9,7 +9,7 @@ import copy
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Tuple, Iterator, List
+from typing import Any, Dict, Tuple, Iterator, List, Optional
 import torch
 from transformers import AutoTokenizer
 
@@ -220,7 +220,8 @@ class SchemaTransformer:
 
     def collate_fn_train(
             self,
-            batch: List[Tuple[str, Dict]]
+            batch: List[Tuple[str, Dict]],
+            max_len: Optional[int] = None,
     ) -> PreprocessedBatch:
         """
         Collate function for training DataLoader.
@@ -236,28 +237,35 @@ class SchemaTransformer:
 
         Args:
             batch: List of (text, schema) tuples from dataset
+            max_len: Maximum number of word tokens per text.  Tokens beyond
+                this limit are dropped before encoding.  ``None`` means no
+                truncation.
 
         Returns:
             PreprocessedBatch ready for model.forward()
         """
         self.is_training = True
-        return self._collate_batch(batch)
+        return self._collate_batch(batch, max_len=max_len)
 
     def collate_fn_inference(
             self,
-            batch: List[Tuple[str, Any]]
+            batch: List[Tuple[str, Any]],
+            max_len: Optional[int] = None,
     ) -> PreprocessedBatch:
         """
         Collate function for inference DataLoader.
 
         Args:
             batch: List of (text, schema) tuples
+            max_len: Maximum number of word tokens per text.  Tokens beyond
+                this limit are dropped before encoding.  ``None`` means no
+                truncation.
 
         Returns:
             PreprocessedBatch for batch_extract
         """
         self.is_training = False
-        return self._collate_batch(batch)
+        return self._collate_batch(batch, max_len=max_len)
 
     def transform_and_format(
             self,
@@ -286,7 +294,8 @@ class SchemaTransformer:
 
     def _collate_batch(
             self,
-            batch: List[Tuple[str, Any]]
+            batch: List[Tuple[str, Any]],
+            max_len: Optional[int] = None,
     ) -> PreprocessedBatch:
         """Internal collate implementation."""
         transformed_records = []
@@ -307,7 +316,7 @@ class SchemaTransformer:
             record = {"text": text, "schema": copy.deepcopy(schema)}
 
             try:
-                transformed = self._transform_record(record)
+                transformed = self._transform_record(record, max_len=max_len)
                 transformed_records.append(transformed)
             except Exception as e:
                 # Create minimal fallback record
@@ -315,8 +324,16 @@ class SchemaTransformer:
 
         return self._pad_batch(transformed_records)
 
-    def _transform_record(self, record: Dict[str, Any]) -> TransformedRecord:
-        """Transform a single record (internal)."""
+    def _transform_record(self, record: Dict[str, Any], max_len: Optional[int] = None) -> TransformedRecord:
+        """Transform a single record (internal).
+
+        Args:
+            record: Dict with ``text`` and ``schema`` keys.
+            max_len: Maximum number of word tokens to keep.  Truncation happens
+                after word-splitting but before schema encoding, so span
+                character positions in the output always point into the
+                original text string.  ``None`` means no truncation.
+        """
         record_ = copy.deepcopy(record)
         text, schema = record_["text"], record_["schema"]
 
@@ -339,6 +356,11 @@ class SchemaTransformer:
             text_tokens.append(tkn)
             start_idx_map.append(start)
             end_idx_map.append(end)
+
+        if max_len is not None:
+            text_tokens = text_tokens[:max_len]
+            start_idx_map = start_idx_map[:max_len]
+            end_idx_map = end_idx_map[:max_len]
 
         if prefix:
             text_tokens = prefix + text_tokens
