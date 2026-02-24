@@ -31,7 +31,7 @@ import hashlib
 import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union, Tuple, TYPE_CHECKING, Pattern, Literal
+from typing import Any, Dict, List, Optional, Union, Tuple, TYPE_CHECKING, Pattern, Literal, Type, TypeVar, get_origin, get_args
 
 import torch
 import torch.nn.functional as F
@@ -43,6 +43,102 @@ from gliner2.training.trainer import ExtractorCollator
 
 if TYPE_CHECKING:
     from gliner2.api_client import GLiNER2API
+
+try:
+    from pydantic import BaseModel
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    BaseModel = Any
+    PYDANTIC_AVAILABLE = False
+
+T = TypeVar("T", bound="BaseModel")
+
+
+# =============================================================================
+# Pydantic Integration Utilities
+# =============================================================================
+
+class PydanticConverter:
+    """Bridge for Pydantic-based schema generation and object materialization."""
+
+    @staticmethod
+    def to_schema(model_class: Type[BaseModel], schema_builder: 'Schema') -> 'Schema':
+        """Generates a GLiNER2 structure schema from a Pydantic model."""
+        if not PYDANTIC_AVAILABLE:
+            raise ImportError("Pydantic is required for this feature. Install it with `pip install pydantic`.")
+            
+        struct_name = model_class.__name__.lower()
+        builder = schema_builder.structure(struct_name)
+
+        fields = getattr(model_class, "model_fields", getattr(model_class, "__fields__", {}))
+
+        for name, field in fields.items():
+            annotation = getattr(field, "annotation", getattr(field, "type_", None))
+            origin = get_origin(annotation)
+            args = get_args(annotation)
+
+            # Prevent silent failures by warning about unsupported nested models
+            check_type = annotation
+            if origin:
+                check_type = args[0] if args else annotation
+            
+            try:
+                if isinstance(check_type, type) and issubclass(check_type, BaseModel):
+                    import warnings
+                    warnings.warn(
+                        f"Field '{name}' in {model_class.__name__} appears to be a nested Pydantic model. "
+                        "GLiNER2 currently only supports flat structures; this field will be extracted as raw text.",
+                        UserWarning
+                    )
+            except TypeError:
+                pass 
+
+            dtype: Literal["str", "list"] = "list" if origin is list else "str"
+            choices = None
+
+            if origin is Literal:
+                choices = list(args)
+                dtype = "str"
+            elif origin is Union:
+                non_none_args = [a for a in args if a is not type(None)]
+                if non_none_args:
+                    inner_origin = get_origin(non_none_args[0])
+                    dtype = "list" if inner_origin is list else "str"
+                    if inner_origin is Literal:
+                        choices = list(get_args(non_none_args[0]))
+                        dtype = "str"
+
+            description = getattr(field, "description", None)
+
+            builder.field(
+                name=name,
+                dtype=dtype,
+                choices=choices,
+                description=description
+            )
+
+        return schema_builder
+
+    @staticmethod
+    def materialize(model_class: Type[T], data: Dict[str, Any]) -> Optional[T]:
+        """Instantiates a Pydantic model from extracted dictionary data."""
+        if not PYDANTIC_AVAILABLE:
+            raise ImportError("Pydantic is required for this feature. Install it with `pip install pydantic`.")
+            
+        struct_name = model_class.__name__.lower()
+        instances = data.get(struct_name, [])
+        if not instances:
+            return None
+
+        # Map internal multi-instance output to single model materialization
+        instance_data = instances[0]
+        
+        # Exclude nulls to allow Pydantic to apply field defaults and handle Optional types
+        cleaned_data = {k: v for k, v in instance_data.items() if v is not None}
+        
+        if hasattr(model_class, "model_validate"):
+            return model_class.model_validate(cleaned_data)
+        return model_class(**cleaned_data)
 
 
 # =============================================================================
@@ -289,6 +385,10 @@ class Schema:
             self._active_builder = None
         return self.schema
 
+    def from_pydantic(self, model_class: Type['BaseModel']) -> 'Schema':
+        """Builds schema from a Pydantic model class."""
+        return PydanticConverter.to_schema(model_class, self)
+
 
 # =============================================================================
 # Main GLiNER2 Class
@@ -318,6 +418,29 @@ class GLiNER2(Extractor):
     def create_schema(self) -> Schema:
         """Create a new schema builder."""
         return Schema()
+
+    def predict_model(
+        self, 
+        text: str, 
+        model_class: Type[T], 
+        threshold: float = 0.5,
+        **kwargs
+    ) -> Optional[T]:
+        """
+        Performs extraction and materializes the result into a Pydantic model.
+        
+        Args:
+            text: Input text to extract from
+            model_class: Pydantic model class defining the schema
+            threshold: Confidence threshold for extraction
+            **kwargs: Additional arguments for extract()
+            
+        Returns:
+            Materialized Pydantic model instance or None.
+        """
+        schema = self.create_schema().from_pydantic(model_class)
+        raw_result = self.extract(text, schema, threshold=threshold, **kwargs)
+        return PydanticConverter.materialize(model_class, raw_result)
 
     # =========================================================================
     # Main Batch Extraction
