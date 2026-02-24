@@ -23,14 +23,13 @@ import math
 import random
 import time
 import statistics
-import sys
 from collections import OrderedDict
 
 import torch
 from scipy import stats as sp_stats
 
-
 # ─── Helpers ──────────────────────────────────────────────────────
+
 
 def sync():
     if torch.cuda.is_available():
@@ -88,6 +87,7 @@ def fmt_p(p):
 
 # ─── End-to-end benchmark ────────────────────────────────────────
 
+
 def run_e2e(n_iter, n_warmup):
     """Run end-to-end scenarios, return dict of {name: [times]}."""
     from gliner2 import GLiNER2
@@ -120,18 +120,25 @@ def run_e2e(n_iter, n_warmup):
         "over 160,000 people worldwide."
     )
     ents6 = ["company", "person", "product", "location", "date", "monetary_value"]
-    text_struct = "John Smith, aged 35, is a software engineer at Google in Mountain View."
+    text_struct = (
+        "John Smith, aged 35, is a software engineer at Google in Mountain View."
+    )
     schema_struct = model.create_schema()
-    schema_struct.structure("person").field("name").field("age").field("job_title").field("company").field("location")
+    schema_struct.structure("person").field("name").field("age").field(
+        "job_title"
+    ).field("company").field("location")
     text_rel = "Apple CEO Tim Cook announced the iPhone 15 launch in Cupertino on September 12."
     rels = ["CEO_of", "located_in", "announced_on"]
 
     results = OrderedDict()
     scenarios = [
-        ("single_entity",    lambda: model.extract_entities(text1, ents)),
+        ("single_entity", lambda: model.extract_entities(text1, ents)),
         ("single_structure", lambda: model.extract(text_struct, schema_struct)),
-        ("single_relation",  lambda: model.extract_relations(text_rel, rels)),
-        ("batch8_entity",    lambda: model.batch_extract_entities(texts8, ents, batch_size=8)),
+        ("single_relation", lambda: model.extract_relations(text_rel, rels)),
+        (
+            "batch8_entity",
+            lambda: model.batch_extract_entities(texts8, ents, batch_size=8),
+        ),
         ("long_text_entity", lambda: model.extract_entities(long_text, ents6)),
     ]
 
@@ -146,6 +153,7 @@ def run_e2e(n_iter, n_warmup):
 
 
 # ─── Micro-benchmarks (interleaved old/new) ──────────────────────
+
 
 def run_micro(n_iter, n_warmup):
     """Run micro-benchmarks with interleaved old/new for paired comparison."""
@@ -200,9 +208,13 @@ def run_micro(n_iter, n_warmup):
     schema_dict = {
         "json_structures": [{"person": {"name": "", "age": "", "job": ""}}],
         "entities": {"company": "", "location": ""},
-        "relations": [], "classifications": [],
+        "relations": [],
+        "classifications": [],
     }
-    record = {"text": "Apple CEO Tim Cook announced iPhone 15." * 3, "schema": schema_dict}
+    record = {
+        "text": "Apple CEO Tim Cook announced iPhone 15." * 3,
+        "schema": schema_dict,
+    }
 
     def opt4_old():
         return copy.deepcopy(record)
@@ -216,8 +228,22 @@ def run_micro(n_iter, n_warmup):
     _print_paired(old_t, new_t)
 
     # --- OPT-6: Token cache ---
-    special_tokens = ["[SEP_STRUCT]", "[SEP_TEXT]", "[P]", "[C]", "[E]", "[R]", "[L]",
-                       "[EXAMPLE]", "[OUTPUT]", "[DESCRIPTION]", "(", ")", ",", "|"]
+    special_tokens = [
+        "[SEP_STRUCT]",
+        "[SEP_TEXT]",
+        "[P]",
+        "[C]",
+        "[E]",
+        "[R]",
+        "[L]",
+        "[EXAMPLE]",
+        "[OUTPUT]",
+        "[DESCRIPTION]",
+        "(",
+        ")",
+        ",",
+        "|",
+    ]
     cache = {tok: tokenizer.tokenize(tok) for tok in special_tokens}
     test_tokens = special_tokens * 10
 
@@ -240,15 +266,22 @@ def run_micro(n_iter, n_warmup):
     # --- OPT-12: Skip DataLoader ---
     collator = ExtractorCollator(model.processor, is_training=False)
     text_norm = "Apple CEO Tim Cook announced the iPhone 15 launch in Cupertino on September 12, 2023."
-    schema_e = model.create_schema().entities(["company", "person", "product", "location", "date"])
+    schema_e = model.create_schema().entities(
+        ["company", "person", "product", "location", "date"]
+    )
     sd = schema_e.build()
     for c in sd.get("classifications", []):
         c.setdefault("true_label", ["N/A"])
     small_dataset = [(text_norm, sd)]
 
     def opt12_old():
-        loader = DataLoader(small_dataset, batch_size=8, shuffle=False,
-                          num_workers=0, collate_fn=collator)
+        loader = DataLoader(
+            small_dataset,
+            batch_size=8,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=collator,
+        )
         return list(loader)
 
     def opt12_new():
@@ -275,14 +308,26 @@ def _interleaved(old_fn, new_fn, n_warmup, n_iter):
     for _ in range(n_iter):
         # Randomize order each iteration to eliminate systematic bias
         if random.random() < 0.5:
-            sync(); t0 = time.perf_counter(); old_fn(); sync()
+            sync()
+            t0 = time.perf_counter()
+            old_fn()
+            sync()
             old_times.append((time.perf_counter() - t0) * 1000)
-            sync(); t0 = time.perf_counter(); new_fn(); sync()
+            sync()
+            t0 = time.perf_counter()
+            new_fn()
+            sync()
             new_times.append((time.perf_counter() - t0) * 1000)
         else:
-            sync(); t0 = time.perf_counter(); new_fn(); sync()
+            sync()
+            t0 = time.perf_counter()
+            new_fn()
+            sync()
             new_times.append((time.perf_counter() - t0) * 1000)
-            sync(); t0 = time.perf_counter(); old_fn(); sync()
+            sync()
+            t0 = time.perf_counter()
+            old_fn()
+            sync()
             old_times.append((time.perf_counter() - t0) * 1000)
 
     return old_times, new_times
@@ -291,12 +336,15 @@ def _interleaved(old_fn, new_fn, n_warmup, n_iter):
 def _print_paired(old_t, new_t):
     m_old, m_new = statistics.mean(old_t), statistics.mean(new_t)
     t_stat, p_val, mean_diff, hw = paired_test(old_t, new_t)
-    speedup = m_old / m_new if m_new > 0 else float('inf')
-    print(f"{m_old:.4f} -> {m_new:.4f} ms  ({speedup:.1f}x)  "
-          f"diff={mean_diff:.4f}±{hw:.4f}ms  p={fmt_p(p_val)}")
+    speedup = m_old / m_new if m_new > 0 else float("inf")
+    print(
+        f"{m_old:.4f} -> {m_new:.4f} ms  ({speedup:.1f}x)  "
+        f"diff={mean_diff:.4f}±{hw:.4f}ms  p={fmt_p(p_val)}"
+    )
 
 
 # ─── Compare mode ────────────────────────────────────────────────
+
 
 def compare(baseline_path, optimized_path):
     """Compare two end-to-end result files with Welch's t-test."""
@@ -305,10 +353,16 @@ def compare(baseline_path, optimized_path):
     with open(optimized_path) as f:
         optimized = json.load(f)
 
-    print(f"\nBaseline:  {baseline_path}  (device={baseline['device']}, n={baseline.get('n', '?')})")
-    print(f"Optimized: {optimized_path}  (device={optimized['device']}, n={optimized.get('n', '?')})")
+    print(
+        f"\nBaseline:  {baseline_path}  (device={baseline['device']}, n={baseline.get('n', '?')})"
+    )
+    print(
+        f"Optimized: {optimized_path}  (device={optimized['device']}, n={optimized.get('n', '?')})"
+    )
 
-    print(f"\n{'Scenario':<25} {'Baseline':>18} {'Optimized':>18} {'Diff':>14} {'Speedup':>8} {'p-value':>10}")
+    print(
+        f"\n{'Scenario':<25} {'Baseline':>18} {'Optimized':>18} {'Diff':>14} {'Speedup':>8} {'p-value':>10}"
+    )
     print("=" * 100)
 
     for name in baseline["e2e"]:
@@ -319,7 +373,7 @@ def compare(baseline_path, optimized_path):
         m_o, ci_o = statistics.mean(o), ci95(o)
         diff = m_b - m_o
         diff_ci = math.sqrt(ci_b**2 + ci_o**2)  # approximate CI of difference
-        speedup = m_b / m_o if m_o > 0 else float('inf')
+        speedup = m_b / m_o if m_o > 0 else float("inf")
         t_stat, p_val = welch_test(b, o)
 
         sig = "*" if p_val < 0.05 else " "
@@ -328,12 +382,16 @@ def compare(baseline_path, optimized_path):
         if p_val < 0.001:
             sig = "***"
 
-        print(f"{name:<25} {m_b:>7.2f}±{ci_b:>5.2f}ms  {m_o:>7.2f}±{ci_o:>5.2f}ms  "
-              f"{diff:>+6.2f}±{diff_ci:>4.2f}ms  {speedup:>7.3f}x  {fmt_p(p_val):>9}{sig}")
+        print(
+            f"{name:<25} {m_b:>7.2f}±{ci_b:>5.2f}ms  {m_o:>7.2f}±{ci_o:>5.2f}ms  "
+            f"{diff:>+6.2f}±{diff_ci:>4.2f}ms  {speedup:>7.3f}x  {fmt_p(p_val):>9}{sig}"
+        )
 
     # Micro-benchmarks (if present in optimized)
     if "micro" in optimized:
-        print(f"\n{'Component':<30} {'Old':>16} {'New':>16} {'Diff (paired)':>18} {'Speedup':>8} {'p-value':>10}")
+        print(
+            f"\n{'Component':<30} {'Old':>16} {'New':>16} {'Diff (paired)':>18} {'Speedup':>8} {'p-value':>10}"
+        )
         print("=" * 105)
 
         for name, data in optimized["micro"].items():
@@ -342,31 +400,39 @@ def compare(baseline_path, optimized_path):
             m_old, ci_old = statistics.mean(old_t), ci95(old_t)
             m_new, ci_new = statistics.mean(new_t), ci95(new_t)
             t_stat, p_val, mean_diff, hw = paired_test(old_t, new_t)
-            speedup = m_old / m_new if m_new > 0 else float('inf')
+            speedup = m_old / m_new if m_new > 0 else float("inf")
 
             sig = "*" if p_val < 0.05 else " "
-            if p_val < 0.01: sig = "**"
-            if p_val < 0.001: sig = "***"
+            if p_val < 0.01:
+                sig = "**"
+            if p_val < 0.001:
+                sig = "***"
 
-            print(f"{name:<30} {m_old:>6.4f}±{ci_old:>6.4f}ms  {m_new:>6.4f}±{ci_new:>6.4f}ms  "
-                  f"{mean_diff:>+7.4f}±{hw:>6.4f}ms  {speedup:>7.1f}x  {fmt_p(p_val):>9}{sig}")
+            print(
+                f"{name:<30} {m_old:>6.4f}±{ci_old:>6.4f}ms  {m_new:>6.4f}±{ci_new:>6.4f}ms  "
+                f"{mean_diff:>+7.4f}±{hw:>6.4f}ms  {speedup:>7.1f}x  {fmt_p(p_val):>9}{sig}"
+            )
 
 
 # ─── Main ────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", help="Tag for this run (baseline or optimized)")
     parser.add_argument("--n", type=int, default=300, help="Iterations per scenario")
     parser.add_argument("--warmup", type=int, default=10, help="Warmup iterations")
-    parser.add_argument("--compare", nargs=2, metavar=("BASELINE", "OPTIMIZED"),
-                       help="Compare two result files")
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("BASELINE", "OPTIMIZED"),
+        help="Compare two result files",
+    )
     args = parser.parse_args()
 
     if args.compare:
         compare(
-            f"bench_stats_{args.compare[0]}.json",
-            f"bench_stats_{args.compare[1]}.json"
+            f"bench_stats_{args.compare[0]}.json", f"bench_stats_{args.compare[1]}.json"
         )
         return
 

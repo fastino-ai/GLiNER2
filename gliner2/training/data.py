@@ -72,7 +72,11 @@ class ValidationError(Exception):
     def __str__(self):
         if self.errors:
             error_list = "\n  - ".join(self.errors[:10])
-            suffix = f"\n  ... and {len(self.errors) - 10} more errors" if len(self.errors) > 10 else ""
+            suffix = (
+                f"\n  ... and {len(self.errors) - 10} more errors"
+                if len(self.errors) > 10
+                else ""
+            )
             return f"{self.args[0]}\n  - {error_list}{suffix}"
         return self.args[0]
 
@@ -81,8 +85,10 @@ class ValidationError(Exception):
 # Data Format Detection & Loading
 # =============================================================================
 
+
 class DataFormat:
     """Enum-like class for supported data formats."""
+
     JSONL = "jsonl"
     JSONL_LIST = "jsonl_list"
     INPUT_EXAMPLE_LIST = "input_example_list"
@@ -94,12 +100,12 @@ class DataFormat:
 def detect_data_format(data: Any) -> str:
     """
     Detect the format of input data.
-    
+
     Parameters
     ----------
     data : Any
         Input data in any supported format.
-        
+
     Returns
     -------
     str
@@ -108,11 +114,11 @@ def detect_data_format(data: Any) -> str:
     # String path
     if isinstance(data, str):
         return DataFormat.JSONL
-    
+
     # Path object
     if isinstance(data, Path):
         return DataFormat.JSONL
-    
+
     # List types
     if isinstance(data, list) and len(data) > 0:
         first = data[0]
@@ -122,35 +128,35 @@ def detect_data_format(data: Any) -> str:
             return DataFormat.INPUT_EXAMPLE_LIST
         if isinstance(first, dict):
             return DataFormat.DICT_LIST
-    
+
     # Empty list - default to dict list
     if isinstance(data, list) and len(data) == 0:
         return DataFormat.DICT_LIST
-    
+
     # TrainingDataset
     if isinstance(data, TrainingDataset):
         return DataFormat.TRAINING_DATASET
-    
+
     # ExtractorDataset (internal) - forward reference
-    if type(data).__name__ == 'ExtractorDataset':
+    if type(data).__name__ == "ExtractorDataset":
         return DataFormat.EXTRACTOR_DATASET
-    
+
     raise ValueError(f"Unsupported data format: {type(data)}")
 
 
 class DataLoader_Factory:
     """
     Factory for loading data from various formats into a unified internal format.
-    
+
     All loaders convert data to List[Dict] format where each dict has:
     - "input": str (the text)
     - "output": Dict (the schema/annotations)
-    
+
     Or alternatively:
     - "text": str
     - "schema": Dict
     """
-    
+
     @staticmethod
     def load(
         data: Any,
@@ -161,7 +167,7 @@ class DataLoader_Factory:
     ) -> List[Dict[str, Any]]:
         """
         Load data from any supported format.
-        
+
         Parameters
         ----------
         data : Any
@@ -176,14 +182,14 @@ class DataLoader_Factory:
             Whether to validate the data. Validation is always strict:
             checks that entity spans, relation values, and structure
             field values exist in the text.
-            
+
         Returns
         -------
         List[Dict[str, Any]]
             List of records in unified format.
         """
         fmt = detect_data_format(data)
-        
+
         # Load based on format
         if fmt == DataFormat.JSONL:
             records = DataLoader_Factory._load_jsonl(data)
@@ -199,53 +205,55 @@ class DataLoader_Factory:
             records = data.data.copy()
         else:
             raise ValueError(f"Unsupported data format: {type(data)}")
-        
+
         # Validate if requested
         if validate and records:
             valid_indices, invalid_info = DataLoader_Factory._validate_records(records)
-            
+
             if invalid_info:
                 total_records = len(records)
                 num_invalid = len(invalid_info)
                 num_valid = len(valid_indices)
-                
-                print(f"\nValidation: Found {num_invalid} invalid record(s) out of {total_records} total")
+
+                print(
+                    f"\nValidation: Found {num_invalid} invalid record(s) out of {total_records} total"
+                )
                 print("Removed invalid records:")
-                
+
                 # Print first 5 invalid records
                 for idx, (record_idx, record, errors) in enumerate(invalid_info[:5]):
                     # Print first error for this record
                     error_msg = errors[0] if errors else "Unknown error"
                     print(f"  Record {record_idx}: {error_msg}")
-                
+
                 if num_invalid > 5:
                     print(f"  ... and {num_invalid - 5} more invalid record(s)")
-                
+
                 print(f"Kept {num_valid} valid record(s)\n")
-                
+
                 # Filter records to keep only valid ones
                 records = [records[i] for i in valid_indices]
-        
+
         # Shuffle
         if shuffle and records:
             random.seed(seed)
             random.shuffle(records)
-        
+
         # Limit samples
         if max_samples > 0 and len(records) > max_samples:
             records = records[:max_samples]
-        
+
         return records
-    
+
     @staticmethod
     def _load_jsonl(path: Union[str, Path]) -> List[Dict]:
         """Load from single JSONL file."""
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
-        
+
         records = []
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if line:
@@ -253,9 +261,9 @@ class DataLoader_Factory:
                         records.append(json.loads(line))
                     except json.JSONDecodeError as e:
                         raise ValueError(f"Invalid JSON in {path} line {line_num}: {e}")
-        
+
         return records
-    
+
     @staticmethod
     def _load_jsonl_list(paths: List[Union[str, Path]]) -> List[Dict]:
         """Load from multiple JSONL files."""
@@ -263,25 +271,25 @@ class DataLoader_Factory:
         for path in paths:
             records.extend(DataLoader_Factory._load_jsonl(path))
         return records
-    
+
     @staticmethod
     def _load_input_examples(examples: List[InputExample]) -> List[Dict]:
         """Load from list of InputExample objects."""
         return [ex.to_dict() for ex in examples]
-    
+
     @staticmethod
     def _load_training_dataset(dataset: TrainingDataset) -> List[Dict]:
         """Load from TrainingDataset object."""
         return dataset.to_records()
-    
+
     @staticmethod
     def _load_dict_list(dicts: List[Dict]) -> List[Dict]:
         """Load from list of dicts."""
         if not dicts:
             return []
-        
+
         first = dicts[0]
-        
+
         # Check format
         if "input" in first and "output" in first:
             # Already in correct format
@@ -309,19 +317,21 @@ class DataLoader_Factory:
                 f"Unknown dict format. Expected keys like 'input'/'output', 'text'/'schema', "
                 f"or 'text' with annotation keys. Got: {list(first.keys())}"
             )
-    
+
     @staticmethod
-    def _validate_records(records: List[Dict]) -> Tuple[List[int], List[Tuple[int, Dict, List[str]]]]:
+    def _validate_records(
+        records: List[Dict],
+    ) -> Tuple[List[int], List[Tuple[int, Dict, List[str]]]]:
         """
         Validate and sanitize all records, removing only invalid parts.
-        
+
         Uses granular sanitization:
         - Entities: Drop entity type if any mention not found
         - Classifications: Drop individual invalid classifications
         - Structures: Remove invalid fields, drop if all invalid
         - Relations: Drop relation if any field invalid
         - Record: Drop only if no valid tasks remain
-        
+
         Returns
         -------
         Tuple[List[int], List[Tuple[int, Dict, List[str]]]]
@@ -330,13 +340,18 @@ class DataLoader_Factory:
         """
         valid_indices = []
         invalid_info = []
-        
-        for i, record in tqdm(enumerate(records), total=len(records), desc="Validating records", unit="record"):
+
+        for i, record in tqdm(
+            enumerate(records),
+            total=len(records),
+            desc="Validating records",
+            unit="record",
+        ):
             warnings = []
             try:
                 example = InputExample.from_dict(record)
                 sanitize_warnings, is_valid = example.sanitize()
-                
+
                 if is_valid:
                     # Replace record with sanitized version
                     records[i] = example.to_dict()
@@ -351,26 +366,27 @@ class DataLoader_Factory:
             except Exception as e:
                 warnings.append(f"Failed to parse - {e}")
                 invalid_info.append((i, record, warnings))
-        
+
         return valid_indices, invalid_info
 
 
 # Type alias for flexible data input
 TrainDataInput = Union[
-    str,                      # Single JSONL path
-    Path,                     # Single JSONL path
-    List[str],                # Multiple JSONL paths
-    List[Path],               # Multiple JSONL paths
-    List[Dict[str, Any]],     # Raw records
-    'TrainingDataset',        # TrainingDataset (forward reference)
-    'List[InputExample]',     # List of InputExample (forward reference)
-    'ExtractorDataset',       # Legacy dataset (forward reference)
+    str,  # Single JSONL path
+    Path,  # Single JSONL path
+    List[str],  # Multiple JSONL paths
+    List[Path],  # Multiple JSONL paths
+    List[Dict[str, Any]],  # Raw records
+    "TrainingDataset",  # TrainingDataset (forward reference)
+    "List[InputExample]",  # List of InputExample (forward reference)
+    "ExtractorDataset",  # Legacy dataset (forward reference)
 ]
 
 
 # =============================================================================
 # Training Data Classes
 # =============================================================================
+
 
 @dataclass
 class Classification:
@@ -394,6 +410,7 @@ class Classification:
     label_descriptions : Dict[str, str], optional
         Descriptions for each label.
     """
+
     task: str
     labels: List[str]
     true_label: Union[str, List[str]]
@@ -407,7 +424,7 @@ class Classification:
             self._true_label_list = [self.true_label]
         else:
             self._true_label_list = list(self.true_label)
-        
+
         # Auto-infer multi_label=True when multiple true labels are provided
         if len(self._true_label_list) > 1:
             self.multi_label = True
@@ -421,22 +438,34 @@ class Classification:
             errors.append(f"Classification '{self.task}' has no labels")
         for label in self._true_label_list:
             if label not in self.labels:
-                errors.append(f"True label '{label}' not in labels list for task '{self.task}'")
+                errors.append(
+                    f"True label '{label}' not in labels list for task '{self.task}'"
+                )
         if len(self._true_label_list) > 1 and not self.multi_label:
-            errors.append(f"Multiple true labels provided for '{self.task}' but multi_label=False")
+            errors.append(
+                f"Multiple true labels provided for '{self.task}' but multi_label=False"
+            )
         if self.label_descriptions:
             for key in self.label_descriptions:
                 if key not in self.labels:
-                    errors.append(f"Label description key '{key}' not in labels for task '{self.task}'")
+                    errors.append(
+                        f"Label description key '{key}' not in labels for task '{self.task}'"
+                    )
         if self.examples:
             for i, ex in enumerate(self.examples):
                 if not isinstance(ex, (list, tuple)) or len(ex) != 2:
-                    errors.append(f"Example {i} for task '{self.task}' must be (input, output) pair")
+                    errors.append(
+                        f"Example {i} for task '{self.task}' must be (input, output) pair"
+                    )
         return errors
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to training format dictionary."""
-        result = {"task": self.task, "labels": self.labels, "true_label": self._true_label_list}
+        result = {
+            "task": self.task,
+            "labels": self.labels,
+            "true_label": self._true_label_list,
+        }
         if self.multi_label:
             result["multi_label"] = True
         if self.prompt:
@@ -460,13 +489,16 @@ class ChoiceField:
     choices : List[str]
         All possible choices.
     """
+
     value: str
     choices: List[str]
 
     def validate(self, field_name: str) -> List[str]:
         errors = []
         if self.value not in self.choices:
-            errors.append(f"Choice value '{self.value}' not in choices {self.choices} for field '{field_name}'")
+            errors.append(
+                f"Choice value '{self.value}' not in choices {self.choices} for field '{field_name}'"
+            )
         return errors
 
     def to_dict(self) -> Dict[str, Any]:
@@ -493,11 +525,14 @@ class Structure:
     >>> struct = Structure("product", name="iPhone", price="$999")
     >>> struct = Structure("contact", name="John", email="john@example.com")
     """
+
     struct_name: str
     _fields: Dict[str, Any] = field(default_factory=dict)
     descriptions: Optional[Dict[str, str]] = None
 
-    def __init__(self, struct_name: str, _descriptions: Dict[str, str] = None, **fields):
+    def __init__(
+        self, struct_name: str, _descriptions: Dict[str, str] = None, **fields
+    ):
         self.struct_name = struct_name
         self._fields = fields
         self.descriptions = _descriptions
@@ -505,12 +540,12 @@ class Structure:
     def validate(self, text: str) -> List[str]:
         """
         Validate this structure.
-        
+
         Parameters
         ----------
         text : str
             The text to validate against. Field values must exist in this text.
-        
+
         Returns
         -------
         List[str]
@@ -527,10 +562,14 @@ class Structure:
             elif isinstance(value, list):
                 for i, v in enumerate(value):
                     if v and v.lower() not in text.lower():
-                        errors.append(f"List value '{v}' at index {i} in '{self.struct_name}.{field_name}' not found in text")
+                        errors.append(
+                            f"List value '{v}' at index {i} in '{self.struct_name}.{field_name}' not found in text"
+                        )
             elif isinstance(value, str):
                 if value and value.lower() not in text.lower():
-                    errors.append(f"Value '{value}' for '{self.struct_name}.{field_name}' not found in text")
+                    errors.append(
+                        f"Value '{value}' for '{self.struct_name}.{field_name}' not found in text"
+                    )
         return errors
 
     def to_dict(self) -> Dict[str, Dict[str, Any]]:
@@ -564,6 +603,7 @@ class Relation:
     **fields : Any
         Custom field names and values (use instead of head/tail).
     """
+
     name: str
     head: Optional[str] = None
     tail: Optional[str] = None
@@ -587,12 +627,12 @@ class Relation:
     def validate(self, text: str) -> List[str]:
         """
         Validate this relation.
-        
+
         Parameters
         ----------
         text : str
             The text to validate against. Field values must exist in this text.
-        
+
         Returns
         -------
         List[str]
@@ -606,7 +646,9 @@ class Relation:
         for field_name, value in self._fields.items():
             if isinstance(value, str) and value:
                 if value.lower() not in text.lower():
-                    errors.append(f"Relation value '{value}' for '{self.name}.{field_name}' not found in text")
+                    errors.append(
+                        f"Relation value '{value}' for '{self.name}.{field_name}' not found in text"
+                    )
         return errors
 
     def get_field_names(self) -> List[str]:
@@ -643,6 +685,7 @@ class InputExample:
     ...     entities={"person": ["John Smith"], "company": ["Google"]}
     ... )
     """
+
     text: str
     entities: Optional[Dict[str, List[str]]] = None
     entity_descriptions: Optional[Dict[str, str]] = None
@@ -663,10 +706,10 @@ class InputExample:
     def validate(self) -> List[str]:
         """
         Validate this example.
-        
+
         Validation is always strict: checks that entity mentions, relation values,
         and structure field values exist in the text (case-insensitive).
-        
+
         Returns
         -------
         List[str]
@@ -683,12 +726,16 @@ class InputExample:
                     errors.append("Entity type cannot be empty")
                 for mention in mentions:
                     if mention and mention.lower() not in self.text.lower():
-                        errors.append(f"Entity '{mention}' (type: {entity_type}) not found in text")
+                        errors.append(
+                            f"Entity '{mention}' (type: {entity_type}) not found in text"
+                        )
 
         if self.entity_descriptions and self.entities:
             for desc_type in self.entity_descriptions:
                 if desc_type not in self.entities:
-                    errors.append(f"Entity description for '{desc_type}' but no entities of that type")
+                    errors.append(
+                        f"Entity description for '{desc_type}' but no entities of that type"
+                    )
 
         for cls in self.classifications:
             errors.extend(cls.validate())
@@ -702,13 +749,22 @@ class InputExample:
             field_names = tuple(sorted(rel.get_field_names()))
             if rel.name in relation_fields:
                 if relation_fields[rel.name] != field_names:
-                    errors.append(f"Relation '{rel.name}' has inconsistent fields: {relation_fields[rel.name]} vs {field_names}")
+                    errors.append(
+                        f"Relation '{rel.name}' has inconsistent fields: {relation_fields[rel.name]} vs {field_names}"
+                    )
             else:
                 relation_fields[rel.name] = field_names
 
-        has_content = bool(self.entities) or bool(self.classifications) or bool(self.structures) or bool(self.relations)
+        has_content = (
+            bool(self.entities)
+            or bool(self.classifications)
+            or bool(self.structures)
+            or bool(self.relations)
+        )
         if not has_content:
-            errors.append("Example must have at least one task (entities, classifications, structures, or relations)")
+            errors.append(
+                "Example must have at least one task (entities, classifications, structures, or relations)"
+            )
 
         return errors
 
@@ -720,14 +776,14 @@ class InputExample:
         """
         Remove invalid parts from this example, keeping only valid content.
         Mutates self in-place.
-        
+
         Granular removal strategy:
         - Entities: Drop entire entity type if ANY mention is not found in text
         - Classifications: Drop individual classifications that have errors
         - Structures: Remove invalid fields; drop structure only if ALL fields become invalid
         - Relations: Drop the specific relation if ANY field has an error
         - Example: Mark as invalid only if no valid tasks remain
-        
+
         Returns
         -------
         Tuple[List[str], bool]
@@ -735,130 +791,157 @@ class InputExample:
             - bool: True if example still has valid content, False if should be dropped
         """
         warnings = []
-        
+
         if not self.text or not self.text.strip():
             warnings.append("Text is empty")
             return warnings, False
-        
+
         # 1. Sanitize entities - drop entity type if any mention not found
         if self.entities:
             types_to_remove = []
             for entity_type, mentions in self.entities.items():
                 if not entity_type:
                     types_to_remove.append(entity_type)
-                    warnings.append(f"Entity type is empty")
+                    warnings.append("Entity type is empty")
                     continue
-                
+
                 # Check if any mention is not in text
                 has_invalid = False
                 for mention in mentions:
                     if mention and mention.lower() not in self.text.lower():
                         has_invalid = True
-                        warnings.append(f"Entity '{mention}' (type: {entity_type}) not found in text - dropping entity type")
+                        warnings.append(
+                            f"Entity '{mention}' (type: {entity_type}) not found in text - dropping entity type"
+                        )
                         break
-                
+
                 if has_invalid:
                     types_to_remove.append(entity_type)
-            
+
             # Remove invalid entity types
             for entity_type in types_to_remove:
                 del self.entities[entity_type]
-            
+
             # Clean up entity descriptions for removed types
             if self.entity_descriptions:
-                desc_to_remove = [desc_type for desc_type in self.entity_descriptions if desc_type not in self.entities]
+                desc_to_remove = [
+                    desc_type
+                    for desc_type in self.entity_descriptions
+                    if desc_type not in self.entities
+                ]
                 for desc_type in desc_to_remove:
                     del self.entity_descriptions[desc_type]
-        
+
         # 2. Sanitize classifications - drop individual invalid ones
         if self.classifications:
             valid_classifications = []
             for cls in self.classifications:
                 cls_errors = cls.validate()
                 if cls_errors:
-                    warnings.append(f"Classification '{cls.task}' has errors - dropping: {cls_errors[0]}")
+                    warnings.append(
+                        f"Classification '{cls.task}' has errors - dropping: {cls_errors[0]}"
+                    )
                 else:
                     valid_classifications.append(cls)
             self.classifications = valid_classifications
-        
+
         # 3. Sanitize structures - remove invalid fields, drop if all invalid
         if self.structures:
             valid_structures = []
             for struct in self.structures:
                 if not struct.struct_name:
-                    warnings.append(f"Structure has empty name - dropping")
+                    warnings.append("Structure has empty name - dropping")
                     continue
-                
+
                 if not struct._fields:
-                    warnings.append(f"Structure '{struct.struct_name}' has no fields - dropping")
+                    warnings.append(
+                        f"Structure '{struct.struct_name}' has no fields - dropping"
+                    )
                     continue
-                
+
                 # Filter out invalid fields
                 valid_fields = {}
                 for field_name, value in struct._fields.items():
                     is_valid = True
-                    
+
                     if isinstance(value, ChoiceField):
-                        field_errors = value.validate(f"{struct.struct_name}.{field_name}")
+                        field_errors = value.validate(
+                            f"{struct.struct_name}.{field_name}"
+                        )
                         if field_errors:
-                            warnings.append(f"Field '{struct.struct_name}.{field_name}' invalid - dropping field")
+                            warnings.append(
+                                f"Field '{struct.struct_name}.{field_name}' invalid - dropping field"
+                            )
                             is_valid = False
                     elif isinstance(value, list):
                         for v in value:
                             if v and v.lower() not in self.text.lower():
-                                warnings.append(f"List value '{v}' in '{struct.struct_name}.{field_name}' not found - dropping field")
+                                warnings.append(
+                                    f"List value '{v}' in '{struct.struct_name}.{field_name}' not found - dropping field"
+                                )
                                 is_valid = False
                                 break
                     elif isinstance(value, str):
                         if value and value.lower() not in self.text.lower():
-                            warnings.append(f"Value '{value}' for '{struct.struct_name}.{field_name}' not found - dropping field")
+                            warnings.append(
+                                f"Value '{value}' for '{struct.struct_name}.{field_name}' not found - dropping field"
+                            )
                             is_valid = False
-                    
+
                     if is_valid:
                         valid_fields[field_name] = value
-                
+
                 # Only keep structure if it has at least one valid field
                 if valid_fields:
                     struct._fields = valid_fields
                     valid_structures.append(struct)
                 else:
-                    warnings.append(f"Structure '{struct.struct_name}' has no valid fields - dropping")
-            
+                    warnings.append(
+                        f"Structure '{struct.struct_name}' has no valid fields - dropping"
+                    )
+
             self.structures = valid_structures
-        
+
         # 4. Sanitize relations - drop entire relation if any field is invalid
         if self.relations:
             valid_relations = []
             for rel in self.relations:
                 if not rel.name:
-                    warnings.append(f"Relation has empty name - dropping")
+                    warnings.append("Relation has empty name - dropping")
                     continue
-                
+
                 if not rel._fields:
                     warnings.append(f"Relation '{rel.name}' has no fields - dropping")
                     continue
-                
+
                 # Check if any field value is invalid
                 has_invalid = False
                 for field_name, value in rel._fields.items():
                     if isinstance(value, str) and value:
                         if value.lower() not in self.text.lower():
-                            warnings.append(f"Relation '{rel.name}' field '{field_name}' value '{value}' not found - dropping relation")
+                            warnings.append(
+                                f"Relation '{rel.name}' field '{field_name}' value '{value}' not found - dropping relation"
+                            )
                             has_invalid = True
                             break
-                
+
                 if not has_invalid:
                     valid_relations.append(rel)
-            
+
             self.relations = valid_relations
-        
+
         # Check if example still has any valid content
-        has_content = bool(self.entities) or bool(self.classifications) or bool(self.structures) or bool(self.relations)
-        
+        has_content = (
+            bool(self.entities)
+            or bool(self.classifications)
+            or bool(self.structures)
+            or bool(self.relations)
+        )
+
         if not has_content:
             warnings.append("No valid tasks remain after sanitization")
             return warnings, False
-        
+
         return warnings, True
 
     def to_dict(self) -> Dict[str, Any]:
@@ -887,7 +970,7 @@ class InputExample:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'InputExample':
+    def from_dict(cls, data: Dict[str, Any]) -> "InputExample":
         """Create InputExample from training format dictionary."""
         text = data["input"]
         output = data["output"]
@@ -897,15 +980,17 @@ class InputExample:
 
         classifications = []
         for cls_data in output.get("classifications", []):
-            classifications.append(Classification(
-                task=cls_data["task"],
-                labels=cls_data["labels"],
-                true_label=cls_data["true_label"],
-                multi_label=cls_data.get("multi_label", False),
-                prompt=cls_data.get("prompt"),
-                examples=[tuple(ex) for ex in cls_data.get("examples", [])] or None,
-                label_descriptions=cls_data.get("label_descriptions")
-            ))
+            classifications.append(
+                Classification(
+                    task=cls_data["task"],
+                    labels=cls_data["labels"],
+                    true_label=cls_data["true_label"],
+                    multi_label=cls_data.get("multi_label", False),
+                    prompt=cls_data.get("prompt"),
+                    examples=[tuple(ex) for ex in cls_data.get("examples", [])] or None,
+                    label_descriptions=cls_data.get("label_descriptions"),
+                )
+            )
 
         structures = []
         json_descriptions = output.get("json_descriptions", {})
@@ -913,17 +998,31 @@ class InputExample:
             for struct_name, fields in struct_data.items():
                 parsed_fields = {}
                 for field_name, value in fields.items():
-                    if isinstance(value, dict) and "value" in value and "choices" in value:
-                        parsed_fields[field_name] = ChoiceField(value["value"], value["choices"])
+                    if (
+                        isinstance(value, dict)
+                        and "value" in value
+                        and "choices" in value
+                    ):
+                        parsed_fields[field_name] = ChoiceField(
+                            value["value"], value["choices"]
+                        )
                     else:
                         parsed_fields[field_name] = value
-                structures.append(Structure(struct_name, _descriptions=json_descriptions.get(struct_name), **parsed_fields))
+                structures.append(
+                    Structure(
+                        struct_name,
+                        _descriptions=json_descriptions.get(struct_name),
+                        **parsed_fields,
+                    )
+                )
 
         relations = []
         for rel_data in output.get("relations", []):
             for rel_name, fields in rel_data.items():
                 if "head" in fields and "tail" in fields and len(fields) == 2:
-                    relations.append(Relation(rel_name, head=fields["head"], tail=fields["tail"]))
+                    relations.append(
+                        Relation(rel_name, head=fields["head"], tail=fields["tail"])
+                    )
                 else:
                     relations.append(Relation(rel_name, **fields))
 
@@ -933,11 +1032,11 @@ class InputExample:
             entity_descriptions=entity_descriptions,
             classifications=classifications if classifications else None,
             structures=structures if structures else None,
-            relations=relations if relations else None
+            relations=relations if relations else None,
         )
 
     @classmethod
-    def from_json(cls, json_str: str) -> 'InputExample':
+    def from_json(cls, json_str: str) -> "InputExample":
         return cls.from_dict(json.loads(json_str))
 
 
@@ -979,27 +1078,27 @@ class TrainingDataset:
     def __iter__(self) -> Iterator[InputExample]:
         return iter(self.examples)
 
-    def add(self, example: InputExample) -> 'TrainingDataset':
+    def add(self, example: InputExample) -> "TrainingDataset":
         self.examples.append(example)
         return self
 
-    def add_many(self, examples: List[InputExample]) -> 'TrainingDataset':
+    def add_many(self, examples: List[InputExample]) -> "TrainingDataset":
         self.examples.extend(examples)
         return self
 
     def validate(self, raise_on_error: bool = True) -> Dict[str, Any]:
         """
         Validate all examples in the dataset.
-        
+
         Validation is always strict: checks that entity mentions, relation values,
         and structure field values exist in the text (case-insensitive).
-        
+
         Parameters
         ----------
         raise_on_error : bool, default=True
             If True, raises ValidationError when invalid examples are found.
             If False, returns validation report without raising.
-        
+
         Returns
         -------
         Dict[str, Any]
@@ -1023,11 +1122,14 @@ class TrainingDataset:
             "invalid": len(invalid_indices),
             "total": len(self.examples),
             "invalid_indices": invalid_indices,
-            "errors": all_errors
+            "errors": all_errors,
         }
 
         if all_errors and raise_on_error:
-            raise ValidationError(f"Dataset validation failed: {len(invalid_indices)} invalid examples", all_errors)
+            raise ValidationError(
+                f"Dataset validation failed: {len(invalid_indices)} invalid examples",
+                all_errors,
+            )
 
         return report
 
@@ -1042,7 +1144,9 @@ class TrainingDataset:
                 if rel.name in relation_fields:
                     first_idx, first_fields = relation_fields[rel.name]
                     if first_fields != field_names:
-                        errors.append(f"Relation '{rel.name}' field inconsistency: Example {first_idx} has {list(first_fields)}, but Example {i} has {list(field_names)}")
+                        errors.append(
+                            f"Relation '{rel.name}' field inconsistency: Example {first_idx} has {list(first_fields)}, but Example {i} has {list(field_names)}"
+                        )
                 else:
                     relation_fields[rel.name] = (i, field_names)
         return errors
@@ -1059,9 +1163,13 @@ class TrainingDataset:
             "relation_types": Counter(),
             "text_lengths": [],
             "task_distribution": {
-                "entities_only": 0, "classifications_only": 0, "structures_only": 0,
-                "relations_only": 0, "multi_task": 0, "empty": 0
-            }
+                "entities_only": 0,
+                "classifications_only": 0,
+                "structures_only": 0,
+                "relations_only": 0,
+                "multi_task": 0,
+                "empty": 0,
+            },
         }
 
         for example in self.examples:
@@ -1102,14 +1210,17 @@ class TrainingDataset:
         if stats["text_lengths"]:
             lengths = stats["text_lengths"]
             stats["text_length_stats"] = {
-                "min": min(lengths), "max": max(lengths),
+                "min": min(lengths),
+                "max": max(lengths),
                 "mean": sum(lengths) / len(lengths),
-                "median": sorted(lengths)[len(lengths) // 2]
+                "median": sorted(lengths)[len(lengths) // 2],
             }
 
         stats["entity_types"] = dict(stats["entity_types"])
         stats["classification_tasks"] = dict(stats["classification_tasks"])
-        stats["classification_labels"] = {k: dict(v) for k, v in stats["classification_labels"].items()}
+        stats["classification_labels"] = {
+            k: dict(v) for k, v in stats["classification_labels"].items()
+        }
         stats["structure_types"] = dict(stats["structure_types"])
         stats["relation_types"] = dict(stats["relation_types"])
 
@@ -1119,40 +1230,42 @@ class TrainingDataset:
         """Print formatted statistics."""
         s = self.stats()
         print(f"\n{'='*60}")
-        print(f"GLiNER2 Training Dataset Statistics")
+        print("GLiNER2 Training Dataset Statistics")
         print(f"{'='*60}")
         print(f"Total examples: {s['total_examples']}")
 
-        if s.get('text_length_stats'):
-            tls = s['text_length_stats']
-            print(f"\nText lengths: min={tls['min']}, max={tls['max']}, mean={tls['mean']:.1f}")
+        if s.get("text_length_stats"):
+            tls = s["text_length_stats"]
+            print(
+                f"\nText lengths: min={tls['min']}, max={tls['max']}, mean={tls['mean']:.1f}"
+            )
 
-        print(f"\nTask Distribution:")
-        for task, count in s['task_distribution'].items():
+        print("\nTask Distribution:")
+        for task, count in s["task_distribution"].items():
             if count > 0:
                 print(f"  {task}: {count} ({100*count/s['total_examples']:.1f}%)")
 
-        if s['entity_types']:
+        if s["entity_types"]:
             print(f"\nEntity Types ({s['entity_mentions']} total mentions):")
-            for etype, count in sorted(s['entity_types'].items(), key=lambda x: -x[1]):
+            for etype, count in sorted(s["entity_types"].items(), key=lambda x: -x[1]):
                 print(f"  {etype}: {count}")
 
-        if s['classification_tasks']:
-            print(f"\nClassification Tasks:")
-            for task, count in s['classification_tasks'].items():
+        if s["classification_tasks"]:
+            print("\nClassification Tasks:")
+            for task, count in s["classification_tasks"].items():
                 print(f"  {task}: {count} examples")
-                if task in s['classification_labels']:
-                    for label, lcount in s['classification_labels'][task].items():
+                if task in s["classification_labels"]:
+                    for label, lcount in s["classification_labels"][task].items():
                         print(f"    - {label}: {lcount}")
 
-        if s['structure_types']:
-            print(f"\nStructure Types:")
-            for stype, count in s['structure_types'].items():
+        if s["structure_types"]:
+            print("\nStructure Types:")
+            for stype, count in s["structure_types"].items():
                 print(f"  {stype}: {count}")
 
-        if s['relation_types']:
-            print(f"\nRelation Types:")
-            for rtype, count in s['relation_types'].items():
+        if s["relation_types"]:
+            print("\nRelation Types:")
+            for rtype, count in s["relation_types"].items():
                 print(f"  {rtype}: {count}")
 
         print(f"{'='*60}\n")
@@ -1170,13 +1283,18 @@ class TrainingDataset:
             self.validate()
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             for example in self.examples:
-                f.write(example.to_json() + '\n')
+                f.write(example.to_json() + "\n")
         print(f"Saved {len(self.examples)} examples to {path}")
 
     @classmethod
-    def load(cls, paths: Union[str, Path, List[Union[str, Path]]], shuffle: bool = False, seed: int = 42) -> 'TrainingDataset':
+    def load(
+        cls,
+        paths: Union[str, Path, List[Union[str, Path]]],
+        shuffle: bool = False,
+        seed: int = 42,
+    ) -> "TrainingDataset":
         """
         Load dataset from JSONL file(s).
 
@@ -1199,7 +1317,7 @@ class TrainingDataset:
         examples = []
         for path in paths:
             path = Path(path)
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, "r", encoding="utf-8") as f:
                 for line_num, line in enumerate(f, 1):
                     line = line.strip()
                     if line:
@@ -1207,9 +1325,13 @@ class TrainingDataset:
                             data = json.loads(line)
                             examples.append(InputExample.from_dict(data))
                         except json.JSONDecodeError as e:
-                            raise ValueError(f"Invalid JSON in {path} line {line_num}: {e}")
+                            raise ValueError(
+                                f"Invalid JSON in {path} line {line_num}: {e}"
+                            )
                         except Exception as e:
-                            raise ValueError(f"Error parsing {path} line {line_num}: {e}")
+                            raise ValueError(
+                                f"Error parsing {path} line {line_num}: {e}"
+                            )
             print(f"Loaded {len(examples)} examples from {path}")
 
         if shuffle:
@@ -1219,13 +1341,19 @@ class TrainingDataset:
         return cls(examples)
 
     @classmethod
-    def from_records(cls, records: List[Dict[str, Any]]) -> 'TrainingDataset':
+    def from_records(cls, records: List[Dict[str, Any]]) -> "TrainingDataset":
         """Create dataset from list of record dicts."""
         examples = [InputExample.from_dict(r) for r in records]
         return cls(examples)
 
-    def split(self, train_ratio: float = 0.8, val_ratio: float = 0.1, test_ratio: float = 0.1,
-              shuffle: bool = True, seed: int = 42) -> Tuple['TrainingDataset', 'TrainingDataset', 'TrainingDataset']:
+    def split(
+        self,
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        test_ratio: float = 0.1,
+        shuffle: bool = True,
+        seed: int = 42,
+    ) -> Tuple["TrainingDataset", "TrainingDataset", "TrainingDataset"]:
         """Split dataset into train/val/test sets."""
         if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
             raise ValueError("Ratios must sum to 1.0")
@@ -1242,29 +1370,48 @@ class TrainingDataset:
         return (
             TrainingDataset([self.examples[i] for i in indices[:train_end]]),
             TrainingDataset([self.examples[i] for i in indices[train_end:val_end]]),
-            TrainingDataset([self.examples[i] for i in indices[val_end:]])
+            TrainingDataset([self.examples[i] for i in indices[val_end:]]),
         )
 
-    def filter(self, predicate) -> 'TrainingDataset':
+    def filter(self, predicate) -> "TrainingDataset":
         """Filter examples based on a predicate function."""
         return TrainingDataset([ex for ex in self.examples if predicate(ex)])
 
-    def sample(self, n: int, seed: int = 42) -> 'TrainingDataset':
+    def sample(self, n: int, seed: int = 42) -> "TrainingDataset":
         """Random sample of examples."""
         random.seed(seed)
         return TrainingDataset(random.sample(self.examples, min(n, len(self.examples))))
 
 
 # Convenience functions
-def create_entity_example(text: str, entities: Dict[str, List[str]], descriptions: Dict[str, str] = None) -> InputExample:
+def create_entity_example(
+    text: str, entities: Dict[str, List[str]], descriptions: Dict[str, str] = None
+) -> InputExample:
     """Create an entity extraction example."""
     return InputExample(text=text, entities=entities, entity_descriptions=descriptions)
 
 
-def create_classification_example(text: str, task: str, labels: List[str], true_label: Union[str, List[str]],
-                                   multi_label: bool = False, **kwargs) -> InputExample:
+def create_classification_example(
+    text: str,
+    task: str,
+    labels: List[str],
+    true_label: Union[str, List[str]],
+    multi_label: bool = False,
+    **kwargs,
+) -> InputExample:
     """Create a classification example."""
-    return InputExample(text=text, classifications=[Classification(task=task, labels=labels, true_label=true_label, multi_label=multi_label, **kwargs)])
+    return InputExample(
+        text=text,
+        classifications=[
+            Classification(
+                task=task,
+                labels=labels,
+                true_label=true_label,
+                multi_label=multi_label,
+                **kwargs,
+            )
+        ],
+    )
 
 
 def create_structure_example(text: str, structure_name: str, **fields) -> InputExample:
@@ -1272,6 +1419,10 @@ def create_structure_example(text: str, structure_name: str, **fields) -> InputE
     return InputExample(text=text, structures=[Structure(structure_name, **fields)])
 
 
-def create_relation_example(text: str, relation_name: str, head: str = None, tail: str = None, **fields) -> InputExample:
+def create_relation_example(
+    text: str, relation_name: str, head: str = None, tail: str = None, **fields
+) -> InputExample:
     """Create a relation extraction example."""
-    return InputExample(text=text, relations=[Relation(relation_name, head=head, tail=tail, **fields)])
+    return InputExample(
+        text=text, relations=[Relation(relation_name, head=head, tail=tail, **fields)]
+    )

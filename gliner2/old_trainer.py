@@ -11,14 +11,14 @@ from typing import Union, List
 
 import torch
 from torch.utils.data import Dataset, DataLoader
-from transformers import Trainer, TrainingArguments
+from transformers import Trainer
 
-from gliner2.processor import SchemaTransformer, PreprocessedBatch, SamplingConfig
-
+from gliner2.processor import SchemaTransformer, PreprocessedBatch
 
 # =============================================================================
 # Dataset
 # =============================================================================
+
 
 class ExtractorDataset(Dataset):
     """
@@ -63,6 +63,7 @@ class ExtractorDataset(Dataset):
 # Data Collator
 # =============================================================================
 
+
 class ExtractorDataCollator:
     """
     Data collator that uses processor's collate function.
@@ -98,6 +99,7 @@ class ExtractorDataCollator:
 # Trainer
 # =============================================================================
 
+
 class ExtractorTrainer(Trainer):
     """
     Trainer for GLiNER2 with optimized preprocessing.
@@ -112,7 +114,7 @@ class ExtractorTrainer(Trainer):
     Example:
         >>> processor = SchemaTransformer(model_name, sampling_config=config)
         >>> collator = ExtractorDataCollator(processor, is_training=True)
-        >>> 
+        >>>
         >>> trainer = ExtractorTrainer(
         ...     model=model,
         ...     args=TrainingArguments(
@@ -131,12 +133,12 @@ class ExtractorTrainer(Trainer):
     """
 
     def __init__(
-            self,
-            encoder_lr: float = 1e-5,
-            custom_lr: float = 5e-4,
-            weight_decay: float = 0.01,
-            finetune_classifier: bool = False,
-            **kwargs
+        self,
+        encoder_lr: float = 1e-5,
+        custom_lr: float = 5e-4,
+        weight_decay: float = 0.01,
+        finetune_classifier: bool = False,
+        **kwargs,
     ):
         """
         Initialize trainer.
@@ -170,22 +172,26 @@ class ExtractorTrainer(Trainer):
         if self.finetune_classifier:
             # Only classifier parameters
             classifier_params = [
-                p for n, p in self.model.named_parameters()
+                p
+                for n, p in self.model.named_parameters()
                 if n.startswith("classifier") and p.requires_grad
             ]
             if not classifier_params:
                 raise ValueError("No trainable parameters in classifier.")
 
-            groups = [{
-                "params": classifier_params,
-                "lr": self.custom_lr,
-                "weight_decay": self.custom_weight_decay,
-            }]
+            groups = [
+                {
+                    "params": classifier_params,
+                    "lr": self.custom_lr,
+                    "weight_decay": self.custom_weight_decay,
+                }
+            ]
         else:
             # Separate encoder and other parameters
             encoder_params = list(self.model.encoder.parameters())
             other_params = [
-                p for n, p in self.model.named_parameters()
+                p
+                for n, p in self.model.named_parameters()
                 if "encoder" not in n and p.requires_grad
             ]
 
@@ -193,19 +199,23 @@ class ExtractorTrainer(Trainer):
                 {
                     "params": encoder_params,
                     "lr": self.encoder_lr,
-                    "weight_decay": self.custom_weight_decay
+                    "weight_decay": self.custom_weight_decay,
                 },
                 {
                     "params": other_params,
                     "lr": self.custom_lr,
-                    "weight_decay": self.custom_weight_decay
+                    "weight_decay": self.custom_weight_decay,
                 },
             ]
 
-        optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+        optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(
+            self.args
+        )
         self.optimizer = optimizer_cls(groups, **optimizer_kwargs)
 
-    def compute_loss(self, model, inputs: PreprocessedBatch, return_outputs: bool = False, **kwargs):
+    def compute_loss(
+        self, model, inputs: PreprocessedBatch, return_outputs: bool = False, **kwargs
+    ):
         """
         Compute loss on preprocessed batch.
 
@@ -234,14 +244,15 @@ class ExtractorTrainer(Trainer):
 # Training Utilities
 # =============================================================================
 
+
 def create_training_dataloader(
-        dataset: ExtractorDataset,
-        processor: SchemaTransformer,
-        batch_size: int = 32,
-        num_workers: int = 8,
-        pin_memory: bool = True,
-        shuffle: bool = True,
-        prefetch_factor: int = 2,
+    dataset: ExtractorDataset,
+    processor: SchemaTransformer,
+    batch_size: int = 32,
+    num_workers: int = 8,
+    pin_memory: bool = True,
+    shuffle: bool = True,
+    prefetch_factor: int = 2,
 ) -> DataLoader:
     """
     Create an optimized DataLoader for training.
@@ -287,11 +298,11 @@ def create_training_dataloader(
 
 
 def create_inference_dataloader(
-        texts: List[str],
-        schemas: List[dict],
-        processor: SchemaTransformer,
-        batch_size: int = 32,
-        num_workers: int = 4,
+    texts: List[str],
+    schemas: List[dict],
+    processor: SchemaTransformer,
+    batch_size: int = 32,
+    num_workers: int = 4,
 ) -> DataLoader:
     """
     Create a DataLoader for inference.

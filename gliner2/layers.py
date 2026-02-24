@@ -3,7 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def create_mlp(input_dim, intermediate_dims, output_dim, dropout=0.1, activation="gelu", add_layer_norm=False):
+def create_mlp(
+    input_dim,
+    intermediate_dims,
+    output_dim,
+    dropout=0.1,
+    activation="gelu",
+    add_layer_norm=False,
+):
     """
     Creates a multi-layer perceptron (MLP) with specified dimensions and activation functions.
     """
@@ -12,7 +19,7 @@ def create_mlp(input_dim, intermediate_dims, output_dim, dropout=0.1, activation
         "tanh": nn.Tanh,
         "sigmoid": nn.Sigmoid,
         "leaky_relu": nn.LeakyReLU,
-        "gelu": nn.GELU
+        "gelu": nn.GELU,
     }
     layers = []
     in_dim = input_dim
@@ -46,7 +53,7 @@ class DownscaledTransformer(nn.Module):
             nhead=num_heads,
             dim_feedforward=hidden_size * 2,
             dropout=dropout,
-            batch_first=True
+            batch_first=True,
         )
 
         self.transformer = nn.TransformerEncoder(encoder, num_layers=num_layers)
@@ -55,9 +62,9 @@ class DownscaledTransformer(nn.Module):
             input_dim=hidden_size + input_size,
             intermediate_dims=[input_size, input_size],
             output_dim=input_size,
-            dropout=0.,
+            dropout=0.0,
             activation="relu",
-            add_layer_norm=False
+            add_layer_norm=False,
         )
 
     def forward(self, x):
@@ -96,9 +103,9 @@ class CountLSTM(nn.Module):
             input_dim=hidden_size * 2,
             intermediate_dims=[hidden_size * 4],
             output_dim=hidden_size,
-            dropout=0.,
+            dropout=0.0,
             activation="relu",
-            add_layer_norm=False
+            add_layer_norm=False,
         )
 
     def forward(self, pc_emb: torch.Tensor, gold_count_val: int) -> torch.Tensor:
@@ -123,7 +130,9 @@ class CountLSTM(nn.Module):
         # Run the GRU over the count sequence.
         output, _ = self.gru(pos_seq, h0)
         # Concatenate the GRU outputs with the original field embeddings.
-        return self.projector(torch.cat([output, pc_emb.unsqueeze(0).expand_as(output)], dim=-1))
+        return self.projector(
+            torch.cat([output, pc_emb.unsqueeze(0).expand_as(output)], dim=-1)
+        )
 
 
 class CountLSTMv2(nn.Module):
@@ -180,15 +189,20 @@ class CountLSTMoE(nn.Module):
         Drop-out used inside expert FFNs.
     """
 
-    def __init__(self,
-                 hidden_size: int,
-                 max_count: int = 20,
-                 n_experts: int = 4,
-                 ffn_mult: int = 2,
-                 dropout: float = 0.1):
+    def __init__(
+        self,
+        hidden_size: int,
+        max_count: int = 20,
+        n_experts: int = 4,
+        ffn_mult: int = 2,
+        dropout: float = 0.1,
+    ):
         super().__init__()
         self.hidden_size, self.max_count, self.n_experts = (
-            hidden_size, max_count, n_experts)
+            hidden_size,
+            max_count,
+            n_experts,
+        )
 
         # ───── positional encoding + recurrent core ─────
         self.pos_embedding = nn.Embedding(max_count, hidden_size)
@@ -238,11 +252,11 @@ class CountLSTMoE(nn.Module):
 
         # ───── expert FFN: run *all* experts in parallel ─────
         # 1st linear
-        x = torch.einsum('lmd,edh->lmeh', h, self.w1) + self.b1  # [L, M, E, inner]
+        x = torch.einsum("lmd,edh->lmeh", h, self.w1) + self.b1  # [L, M, E, inner]
         x = F.gelu(x)
         x = self.dropout(x)
         # 2nd linear
-        x = torch.einsum('lmeh,ehd->lmed', x, self.w2) + self.b2  # [L, M, E, D]
+        x = torch.einsum("lmeh,ehd->lmed", x, self.w2) + self.b2  # [L, M, E, D]
 
         # ───── mixture weighted by gates ─────
         out = (gates.unsqueeze(-1) * x).sum(dim=2)  # [L, M, D]

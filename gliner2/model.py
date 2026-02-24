@@ -8,14 +8,13 @@ directly for efficient GPU-only forward passes.
 import os
 import tempfile
 import copy
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Tuple
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from gliner.modeling.span_rep import SpanRepLayer
 from gliner2.layers import CountLSTMoE, CountLSTM, create_mlp, CountLSTMv2
-from gliner2.processor import SchemaTransformer, PreprocessedBatch, SamplingConfig
+from gliner2.processor import SchemaTransformer, PreprocessedBatch
 from safetensors.torch import save_file, load_file
 from transformers import (
     PretrainedConfig,
@@ -24,7 +23,6 @@ from transformers import (
     AutoConfig,
     AutoTokenizer,
 )
-
 
 _encoder_cache = {}
 
@@ -44,15 +42,16 @@ def _get_cached_encoder(encoder_config):
 
 class ExtractorConfig(PretrainedConfig):
     """Configuration for the Extractor model."""
+
     model_type = "extractor"
 
     def __init__(
-            self,
-            model_name: str = "bert-base-uncased",
-            max_width: int = 8,
-            counting_layer: str = "count_lstm",
-            token_pooling: str = "first",
-            **kwargs
+        self,
+        model_name: str = "bert-base-uncased",
+        max_width: int = 8,
+        counting_layer: str = "count_lstm",
+        token_pooling: str = "first",
+        **kwargs,
     ):
         super().__init__(**kwargs)
         self.model_name = model_name
@@ -71,13 +70,14 @@ class Extractor(PreTrainedModel):
     Example:
         >>> processor = SchemaTransformer(model_name)
         >>> model = Extractor.from_pretrained(repo_id)
-        >>> 
+        >>>
         >>> # Training
         >>> loader = DataLoader(dataset, collate_fn=processor.collate_fn_train)
         >>> for batch in loader:
         ...     batch = batch.to(device)
         ...     loss = model(batch)["total_loss"]
     """
+
     config_class = ExtractorConfig
     _model_cache = {}
 
@@ -91,13 +91,11 @@ class Extractor(PreTrainedModel):
         # Initialize processor
         if tokenizer is not None:
             self.processor = SchemaTransformer(
-                tokenizer=tokenizer,
-                token_pooling=config.token_pooling
+                tokenizer=tokenizer, token_pooling=config.token_pooling
             )
         else:
             self.processor = SchemaTransformer(
-                config.model_name,
-                token_pooling=config.token_pooling
+                config.model_name, token_pooling=config.token_pooling
             )
 
         # Load encoder
@@ -106,7 +104,9 @@ class Extractor(PreTrainedModel):
         elif encoder_config is not None:
             self.encoder = _get_cached_encoder(encoder_config)
         else:
-            self.encoder = AutoModel.from_pretrained(config.model_name, trust_remote_code=True)
+            self.encoder = AutoModel.from_pretrained(
+                config.model_name, trust_remote_code=True
+            )
 
         self.encoder.resize_token_embeddings(len(self.processor.tokenizer))
         self.hidden_size = self.encoder.config.hidden_size
@@ -124,9 +124,9 @@ class Extractor(PreTrainedModel):
             input_dim=self.hidden_size,
             intermediate_dims=[self.hidden_size * 2],
             output_dim=1,
-            dropout=0.,
+            dropout=0.0,
             activation="relu",
-            add_layer_norm=False
+            add_layer_norm=False,
         )
 
         # Count prediction layer
@@ -134,9 +134,9 @@ class Extractor(PreTrainedModel):
             input_dim=self.hidden_size,
             intermediate_dims=[self.hidden_size * 2],
             output_dim=20,
-            dropout=0.,
+            dropout=0.0,
             activation="relu",
-            add_layer_norm=False
+            add_layer_norm=False,
         )
 
         # Count embedding module
@@ -144,10 +144,7 @@ class Extractor(PreTrainedModel):
             self.count_embed = CountLSTM(self.hidden_size)
         elif config.counting_layer == "count_lstm_moe":
             self.count_embed = CountLSTMoE(
-                hidden_size=self.hidden_size,
-                n_experts=4,
-                ffn_mult=2,
-                dropout=0.1
+                hidden_size=self.hidden_size, n_experts=4, ffn_mult=2, dropout=0.1
             )
         elif config.counting_layer == "count_lstm_v2":
             self.count_embed = CountLSTMv2(hidden_size=self.hidden_size)
@@ -172,9 +169,7 @@ class Extractor(PreTrainedModel):
     # =========================================================================
 
     def forward(
-            self,
-            batch: PreprocessedBatch,
-            return_individual_losses: bool = False
+        self, batch: PreprocessedBatch, return_individual_losses: bool = False
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass on preprocessed batch.
@@ -214,7 +209,7 @@ class Extractor(PreTrainedModel):
                     embs_per_schema=all_schema_embs[i],
                     task_types=batch.task_types[i],
                     structure_labels=batch.structure_labels[i],
-                    device=device
+                    device=device,
                 )
 
                 cls_losses.append(sample_losses["classification"])
@@ -222,16 +217,20 @@ class Extractor(PreTrainedModel):
                 count_losses.append(sample_losses["count"])
 
                 if return_individual_losses:
-                    individual.append({
-                        "total_loss": (
-                                sample_losses["classification"] +
-                                sample_losses["structure"] +
-                                sample_losses["count"]
-                        ).item(),
-                        "classification_loss": sample_losses["classification"].item(),
-                        "structure_loss": sample_losses["structure"].item(),
-                        "count_loss": sample_losses["count"].item(),
-                    })
+                    individual.append(
+                        {
+                            "total_loss": (
+                                sample_losses["classification"]
+                                + sample_losses["structure"]
+                                + sample_losses["count"]
+                            ).item(),
+                            "classification_loss": sample_losses[
+                                "classification"
+                            ].item(),
+                            "structure_loss": sample_losses["structure"].item(),
+                            "count_loss": sample_losses["count"].item(),
+                        }
+                    )
 
                 valid_samples += 1
 
@@ -243,13 +242,15 @@ class Extractor(PreTrainedModel):
                 count_losses.append(zero)
 
                 if return_individual_losses:
-                    individual.append({
-                        "total_loss": 0.0,
-                        "classification_loss": 0.0,
-                        "structure_loss": 0.0,
-                        "count_loss": 0.0,
-                        "error": str(e)
-                    })
+                    individual.append(
+                        {
+                            "total_loss": 0.0,
+                            "classification_loss": 0.0,
+                            "structure_loss": 0.0,
+                            "count_loss": 0.0,
+                            "error": str(e),
+                        }
+                    )
 
         if valid_samples == 0:
             result = self._empty_loss_dict()
@@ -268,7 +269,7 @@ class Extractor(PreTrainedModel):
             "classification_loss": total_cls,
             "structure_loss": total_struct,
             "count_loss": total_count,
-            "batch_size": valid_samples
+            "batch_size": valid_samples,
         }
 
         if return_individual_losses:
@@ -284,7 +285,7 @@ class Extractor(PreTrainedModel):
             "classification_loss": torch.tensor(0.0, device=device),
             "structure_loss": torch.tensor(0.0, device=device),
             "count_loss": torch.tensor(0.0, device=device),
-            "batch_size": 0
+            "batch_size": 0,
         }
 
     # =========================================================================
@@ -292,8 +293,7 @@ class Extractor(PreTrainedModel):
     # =========================================================================
 
     def _encode_batch(
-            self,
-            batch: PreprocessedBatch
+        self, batch: PreprocessedBatch
     ) -> Tuple[List[torch.Tensor], List[List[torch.Tensor]]]:
         """
         Encode batch through transformer and extract embeddings.
@@ -307,16 +307,13 @@ class Extractor(PreTrainedModel):
         """
         # Forward through encoder
         outputs = self.encoder(
-            input_ids=batch.input_ids,
-            attention_mask=batch.attention_mask
+            input_ids=batch.input_ids, attention_mask=batch.attention_mask
         )
         token_embeddings = outputs.last_hidden_state
 
         # Extract embeddings using processor
         return self.processor.extract_embeddings_from_batch(
-            token_embeddings,
-            batch.input_ids,
-            batch
+            token_embeddings, batch.input_ids, batch
         )
 
     # =========================================================================
@@ -324,12 +321,12 @@ class Extractor(PreTrainedModel):
     # =========================================================================
 
     def _compute_sample_loss(
-            self,
-            token_embeddings: torch.Tensor,
-            embs_per_schema: List[List[torch.Tensor]],
-            task_types: List[str],
-            structure_labels: List[Any],
-            device: torch.device
+        self,
+        token_embeddings: torch.Tensor,
+        embs_per_schema: List[List[torch.Tensor]],
+        task_types: List[str],
+        structure_labels: List[Any],
+        device: torch.device,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute all losses for a single sample.
@@ -367,7 +364,9 @@ class Extractor(PreTrainedModel):
                 # Classification loss
                 cls_embeds = schema_emb[1:]  # Skip [P] token
                 logits = self.classifier(cls_embeds).squeeze(-1)
-                labels = torch.tensor(structure_labels[i], dtype=torch.float, device=device)
+                labels = torch.tensor(
+                    structure_labels[i], dtype=torch.float, device=device
+                )
                 cls_loss = cls_loss + F.binary_cross_entropy_with_logits(
                     logits, labels, reduction="sum"
                 )
@@ -384,7 +383,7 @@ class Extractor(PreTrainedModel):
                         span_info["span_rep"],
                         schema_emb,
                         structure,
-                        span_info["span_mask"]
+                        span_info["span_mask"],
                     )
 
                 # Collect for count loss (skip entities)
@@ -396,12 +395,14 @@ class Extractor(PreTrainedModel):
         if all_counts and all_p_embs:
             counts = torch.tensor(all_counts, dtype=torch.long, device=device)
             p_embs = torch.stack(all_p_embs)
-            count_loss = F.cross_entropy(self.count_pred(p_embs), counts, reduction="sum")
+            count_loss = F.cross_entropy(
+                self.count_pred(p_embs), counts, reduction="sum"
+            )
 
         return {
             "classification": cls_loss,
             "structure": struct_loss,
-            "count": count_loss
+            "count": count_loss,
         }
 
     # =========================================================================
@@ -436,30 +437,21 @@ class Extractor(PreTrainedModel):
 
         # Replace invalid with (0, 0) for safe indexing
         safe_spans = torch.where(
-            span_mask.unsqueeze(-1),
-            torch.zeros_like(spans_idx),
-            spans_idx
+            span_mask.unsqueeze(-1), torch.zeros_like(spans_idx), spans_idx
         )
 
         # Compute span representations
-        span_rep = self.span_rep(
-            token_embeddings.unsqueeze(0),
-            safe_spans
-        ).squeeze(0)
+        span_rep = self.span_rep(token_embeddings.unsqueeze(0), safe_spans).squeeze(0)
 
-        return {
-            "span_rep": span_rep,
-            "spans_idx": spans_idx,
-            "span_mask": span_mask
-        }
+        return {"span_rep": span_rep, "spans_idx": spans_idx, "span_mask": span_mask}
 
     def compute_struct_loss(
-            self,
-            span_rep: torch.Tensor,
-            schema_emb: torch.Tensor,
-            structure: List[Any],
-            span_mask: torch.Tensor,
-            masking_rate: float = 0.5
+        self,
+        span_rep: torch.Tensor,
+        schema_emb: torch.Tensor,
+        structure: List[Any],
+        span_mask: torch.Tensor,
+        masking_rate: float = 0.5,
     ) -> torch.Tensor:
         """
         Compute structure extraction loss with negative span masking.
@@ -476,7 +468,7 @@ class Extractor(PreTrainedModel):
         """
         gold_count = min(structure[0], 19)
         struct_proj = self.count_embed(schema_emb[1:], gold_count)
-        scores = torch.einsum('lkd,bpd->bplk', span_rep, struct_proj)
+        scores = torch.einsum("lkd,bpd->bplk", span_rep, struct_proj)
 
         # Create label tensor
         labs = torch.zeros_like(scores)
@@ -497,12 +489,15 @@ class Extractor(PreTrainedModel):
                             continue
                         start, end = sub
                         width = end - start
-                        if 0 <= start < scores.shape[2] and 0 <= width < scores.shape[3]:
+                        if (
+                            0 <= start < scores.shape[2]
+                            and 0 <= width < scores.shape[3]
+                        ):
                             labs[i, k, start, width] = 1
 
         # Apply negative masking
         if masking_rate > 0.0 and self.training:
-            negative = (labs == 0)
+            negative = labs == 0
             random_mask = torch.rand_like(scores) < masking_rate
             to_mask = negative & random_mask
             loss_mask = (~to_mask).float()
@@ -531,11 +526,11 @@ class Extractor(PreTrainedModel):
     def from_pretrained(cls, repo_or_dir: str, **kwargs):
         """
         Load model from Hugging Face Hub or local directory.
-        
+
         To use a LoRA adapter:
             1. Load the base model first
             2. Then load the adapter using model.load_adapter()
-        
+
         Example:
             model = Extractor.from_pretrained("base-model-name")
             model.load_adapter("path/to/adapter")
@@ -586,10 +581,9 @@ class Extractor(PreTrainedModel):
             model_emb = model.encoder.embeddings.word_embeddings.weight
             if saved_emb.shape[0] != model_emb.shape[0]:
                 extra = model_emb.shape[0] - saved_emb.shape[0]
-                state_dict["encoder.embeddings.word_embeddings.weight"] = torch.cat([
-                    saved_emb,
-                    torch.randn(extra, saved_emb.shape[1]) * 0.02
-                ], dim=0)
+                state_dict["encoder.embeddings.word_embeddings.weight"] = torch.cat(
+                    [saved_emb, torch.randn(extra, saved_emb.shape[1]) * 0.02], dim=0
+                )
         except KeyError:
             pass
 
@@ -597,59 +591,59 @@ class Extractor(PreTrainedModel):
         cls._model_cache[cache_key] = model
         return model
 
-    def load_adapter(self, adapter_path: str) -> 'Extractor':
+    def load_adapter(self, adapter_path: str) -> "Extractor":
         """
         Load a LoRA adapter onto this model.
-        
+
         If an adapter is already loaded, it will be unloaded first.
-        
+
         Args:
             adapter_path: Path to adapter directory
-            
+
         Returns:
             self for method chaining
-            
+
         Example:
             model.load_adapter("./legal_adapter")
             results = model.extract_entities(text, entities)
         """
         from gliner2.training.lora import load_lora_adapter, LoRAAdapterConfig
-        
+
         # Load adapter config
         config = LoRAAdapterConfig.load(adapter_path)
-        
+
         self._lora_layers = load_lora_adapter(self, adapter_path, auto_unload=True)
         self._adapter_config = config
         return self
-    
-    def unload_adapter(self) -> 'Extractor':
+
+    def unload_adapter(self) -> "Extractor":
         """
         Unload current LoRA adapter, restoring base model.
-        
+
         Returns:
             self for method chaining
         """
         from gliner2.training.lora import unload_lora_adapter
-        
+
         if self._lora_layers:
             unload_lora_adapter(self)
             self._lora_layers = {}
             self._adapter_config = None
         return self
-    
-    def merge_lora(self) -> 'Extractor':
+
+    def merge_lora(self) -> "Extractor":
         """
         Merge LoRA weights into base model and remove adapter structure.
-        
+
         After calling this, the model will have standard Linear layers with
         merged weights. LoRA adapters are permanently removed.
-        
+
         Returns:
             self for method chaining
-            
+
         Raises:
             ValueError: If no adapter is loaded
-            
+
         Example:
             model.load_adapter("./my_adapter")
             model.merge_lora()  # Now model has merged weights, no LoRA
@@ -657,49 +651,51 @@ class Extractor(PreTrainedModel):
         """
         if not self._lora_layers:
             raise ValueError("No adapter loaded. Nothing to merge.")
-        
+
         from gliner2.training.lora import merge_lora_weights
+
         merge_lora_weights(self)
         self._lora_layers = {}
         self._adapter_config = None
         return self
-    
+
     def save_adapter(self, save_path: str) -> None:
         """
         Save only the LoRA adapter (not full model).
-        
+
         Args:
             save_path: Directory to save adapter
-            
+
         Raises:
             ValueError: If no adapter is loaded
         """
         if not self._lora_layers:
             raise ValueError("No adapter loaded. Use save_pretrained for full model.")
-        
+
         from gliner2.training.lora import save_lora_adapter
+
         save_lora_adapter(self, save_path)
-    
+
     @property
     def has_adapter(self) -> bool:
         """Check if an adapter is currently loaded."""
         return bool(self._lora_layers)
-    
+
     @property
     def adapter_config(self):
         """Get config of loaded adapter, or None."""
         return self._adapter_config
-    
+
     def save_pretrained(
-        self, 
+        self,
         save_directory: str,
         save_adapter_only: bool = False,
         merge_lora: bool = True,
-        **kwargs
+        **kwargs,
     ):
         """
         Save model to directory.
-        
+
         Args:
             save_directory: Where to save
             save_adapter_only: If True and adapter loaded, save only adapter
@@ -712,11 +708,11 @@ class Extractor(PreTrainedModel):
                 raise ValueError("save_adapter_only=True but no adapter loaded")
             self.save_adapter(save_directory)
             return
-        
+
         # Handle LoRA merging if requested
         if merge_lora and self._lora_layers:
             self.merge_lora()
-        
+
         # Original save logic
         os.makedirs(save_directory, exist_ok=True)
         self.config.save_pretrained(save_directory)
