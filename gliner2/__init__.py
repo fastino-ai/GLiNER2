@@ -1,6 +1,23 @@
 __version__ = "1.2.4"
 
 
+# Register custom model type with transformers to avoid warnings
+def _register_model():
+    try:
+        from transformers import AutoConfig, AutoModel
+
+        from .model import Extractor, ExtractorConfig
+
+        AutoConfig.register("extractor", ExtractorConfig)
+        AutoModel.register(ExtractorConfig, Extractor)
+    except Exception:
+        # If registration fails (e.g., older transformers version), silently continue
+        pass
+
+
+_register_model()
+
+
 def __getattr__(name: str):
     if name == "GLiNER2":
         from .inference.engine import GLiNER2
