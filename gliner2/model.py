@@ -153,7 +153,7 @@ class Extractor(PreTrainedModel):
         self._lora_layers = {}
         self._adapter_config = None
 
-        self._print_config(config)
+        # self._print_config(config)
 
     def _print_config(self, config):
         print("=" * 60)
