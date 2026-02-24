@@ -57,6 +57,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
+import torch.distributed as dist
 from tqdm.auto import tqdm
 
 from gliner2.processor import SchemaTransformer, SamplingConfig
@@ -547,6 +548,8 @@ class GLiNER2Trainer:
         self.lora_layers = {}
         self._setup_lora()
 
+        self._setup_distributed()
+
     def _setup_seed(self):
         seed = self.config.seed
         random.seed(seed)
@@ -564,6 +567,9 @@ class GLiNER2Trainer:
             torch.cuda.set_device(self.config.local_rank)
             self.device = torch.device("cuda", self.config.local_rank)
             self.is_distributed = True
+            if not dist.is_initialized():
+                dist.init_process_group(backend="nccl", init_method="env://")
+                logger.info(f"Initialized distributed training: rank {dist.get_rank()}/{dist.get_world_size()}")
         elif torch.cuda.is_available():
             self.device = torch.device("cuda")
             self.is_distributed = False
@@ -655,9 +661,24 @@ class GLiNER2Trainer:
             f"out of {total_params:,} total ({percentage:.2f}%)"
         )
 
+    def _setup_distributed(self):
+        """Setup distributed training if enabled."""
+        if self.is_distributed:
+            self.model = torch.nn.parallel.DistributedDataParallel(
+                self.model,
+                device_ids=[self.config.local_rank],
+                output_device=self.config.local_rank,
+                find_unused_parameters=True 
+            )
+            logger.info("Wrapped model in DistributedDataParallel")
+
+    def _cleanup_distributed(self):
+        if self.is_distributed:
+            dist.destroy_process_group()
+
     @property
     def is_main_process(self) -> bool:
-        return self.config.local_rank <= 0
+        return not self.is_distributed or dist.get_rank() == 0
 
     @staticmethod
     def _safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
@@ -1061,6 +1082,9 @@ class GLiNER2Trainer:
                 wandb.finish()
 
         total_time = time.time() - start_time
+
+        self._cleanup_distributed()
+
         return {
             "total_steps": self.global_step,
             "total_epochs": self.epoch + 1,
@@ -1235,7 +1259,8 @@ class GLiNER2Trainer:
                     lora_was_merged = True
             
             # Save the model (with merged weights if LoRA was used)
-            self.model.save_pretrained(str(checkpoint_dir))
+            model = self.model.module if self.is_distributed else self.model
+            model.save_pretrained(str(checkpoint_dir))
             
             # Unmerge weights after saving to continue training with LoRA
             if lora_was_merged:
