@@ -379,7 +379,6 @@ TrainDataInput = Union[
     List[Dict[str, Any]],  # Raw records
     "TrainingDataset",  # TrainingDataset (forward reference)
     "List[InputExample]",  # List of InputExample (forward reference)
-    "ExtractorDataset",  # Legacy dataset (forward reference)
 ]
 
 
@@ -1229,9 +1228,9 @@ class TrainingDataset:
     def print_stats(self):
         """Print formatted statistics."""
         s = self.stats()
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("GLiNER2 Training Dataset Statistics")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"Total examples: {s['total_examples']}")
 
         if s.get("text_length_stats"):
@@ -1243,7 +1242,7 @@ class TrainingDataset:
         print("\nTask Distribution:")
         for task, count in s["task_distribution"].items():
             if count > 0:
-                print(f"  {task}: {count} ({100*count/s['total_examples']:.1f}%)")
+                print(f"  {task}: {count} ({100 * count / s['total_examples']:.1f}%)")
 
         if s["entity_types"]:
             print(f"\nEntity Types ({s['entity_mentions']} total mentions):")
@@ -1268,7 +1267,7 @@ class TrainingDataset:
             for rtype, count in s["relation_types"].items():
                 print(f"  {rtype}: {count}")
 
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
     def to_jsonl(self) -> str:
         return "\n".join(example.to_json() for example in self.examples)

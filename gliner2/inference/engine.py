@@ -1161,10 +1161,11 @@ class GLiNER2(Extractor):
                     # Multi-label classification
                     if include_confidence:
                         formatted[key] = [
-                            {"label": l, "confidence": c} for l, c in value
+                            {"label": label, "confidence": conf}
+                            for label, conf in value
                         ]
                     else:
-                        formatted[key] = [l for l, _ in value]
+                        formatted[key] = [label for label, _ in value]
                 elif isinstance(value, tuple):
                     # Single-label classification
                     label, conf = value
@@ -1201,10 +1202,11 @@ class GLiNER2(Extractor):
                 elif isinstance(value[0], tuple):
                     if include_confidence:
                         formatted[key] = [
-                            {"label": l, "confidence": c} for l, c in value
+                            {"label": label, "confidence": conf}
+                            for label, conf in value
                         ]
                     else:
-                        formatted[key] = [l for l, _ in value]
+                        formatted[key] = [label for label, _ in value]
                 else:
                     formatted[key] = value
             elif isinstance(value, tuple):
@@ -1271,7 +1273,7 @@ class GLiNER2(Extractor):
 
     def _format_struct(self, struct: Dict, include_confidence: bool) -> Dict:
         formatted = {}
-        for field, value in struct.items():
+        for field_name, value in struct.items():
             if isinstance(value, list):
                 unique = []
                 seen = set()
@@ -1296,18 +1298,18 @@ class GLiNER2(Extractor):
                         if v and v.lower() not in seen:
                             seen.add(v.lower())
                             unique.append(v)
-                formatted[field] = unique
+                formatted[field_name] = unique
             elif isinstance(value, tuple):
                 text, conf, _, _ = value
-                formatted[field] = (
+                formatted[field_name] = (
                     {"text": text, "confidence": conf}
                     if include_confidence and text
                     else text
                 )
             elif value:
-                formatted[field] = value
+                formatted[field_name] = value
             else:
-                formatted[field] = None
+                formatted[field_name] = None
         return formatted
 
     # =========================================================================

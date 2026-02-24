@@ -850,7 +850,11 @@ class SchemaTransformer:
             prompt_str = f"{parent}: {prompt}"
 
         if example_mode in ["descriptions", "both"] and label_descriptions:
-            descs = [(l, d) for l, d in label_descriptions.items() if l in fields]
+            descs = [
+                (label, desc)
+                for label, desc in label_descriptions.items()
+                if label in fields
+            ]
             if self.is_training:
                 random.shuffle(descs)
             for label, desc in descs:
@@ -867,8 +871,8 @@ class SchemaTransformer:
                     )
 
         tokens = ["(", self.P_TOKEN, prompt_str, "("]
-        for field in fields:
-            tokens.extend([child_prefix, field])
+        for field_name in fields:
+            tokens.extend([child_prefix, field_name])
         tokens.extend([")", ")"])
 
         return tokens
@@ -940,7 +944,8 @@ class SchemaTransformer:
                     raise ValueError(f"Missing classification for: {schema_tokens[2]}")
 
                 bool_labels = [
-                    1 if l in cls_item["true_label"] else 0 for l in cls_item["labels"]
+                    1 if label in cls_item["true_label"] else 0
+                    for label in cls_item["labels"]
                 ]
                 results.append(
                     {

@@ -1399,7 +1399,7 @@ class GLiNER2Trainer:
             if self.config.use_lora and self.lora_layers:
                 first_lora_layer = next(iter(self.lora_layers.values()))
                 if not first_lora_layer.merged:
-                    num_merged = merge_lora_weights(self.model)
+                    merge_lora_weights(self.model)
                     lora_was_merged = True
 
             # Save the model (with merged weights if LoRA was used)
