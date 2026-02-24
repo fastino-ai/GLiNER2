@@ -169,7 +169,7 @@ Both formats are supported - use list for consistency or string for brevity:
 {"input": "This is great!", "output": {"classifications": [{"task": "sentiment", "labels": ["positive", "negative", "neutral"], "true_label": "positive"}]}}
 ```
 
-**Note**: 
+**Note**:
 - String format (`"true_label": "positive"`) and list format (`"true_label": ["positive"]`) are both valid for single-label classification
 - Internally, string values are automatically converted to lists (`["positive"]`)
 - For multi-label classification, always use list format: `"true_label": ["label1", "label2"]`

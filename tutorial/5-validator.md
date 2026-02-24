@@ -21,7 +21,7 @@ schema = (extractor.create_schema()
 
 - **pattern**: Regex pattern (string or compiled Pattern)
 - **mode**: `"full"` (exact match) or `"partial"` (substring match)
-- **exclude**: `False` (keep matches) or `True` (exclude matches)  
+- **exclude**: `False` (keep matches) or `True` (exclude matches)
 - **flags**: Regex flags like `re.IGNORECASE` (for string patterns only)
 
 ## Examples

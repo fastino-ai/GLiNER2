@@ -212,7 +212,7 @@ result = extractor.extract_json(
     {
         "product": [
             "name::str::Full product name and model",
-            "storage::str::Storage capacity like 256GB or 1TB", 
+            "storage::str::Storage capacity like 256GB or 1TB",
             "processor::str::Chip or processor information",
             "price::str::Product price with currency",
             "colors::list::Available color options"
@@ -222,7 +222,7 @@ result = extractor.extract_json(
 # Output: {
 #     'product': [{
 #         'name': 'iPhone 15 Pro Max',
-#         'storage': '256GB', 
+#         'storage': '256GB',
 #         'processor': 'A17 Pro chip',
 #         'price': '$1199',
 #         'colors': ['titanium', 'black']
@@ -425,17 +425,17 @@ schema = (extractor.create_schema()
     # Extract key entities
     .entities({
         "person": "Names of people, executives, or individuals",
-        "company": "Organization, corporation, or business names", 
+        "company": "Organization, corporation, or business names",
         "product": "Products, services, or offerings mentioned"
     })
-    
+
     # Classify the content
     .classification("sentiment", ["positive", "negative", "neutral"])
     .classification("category", ["technology", "business", "finance", "healthcare"])
-    
+
     # Extract relationships
     .relations(["works_for", "founded", "located_in"])
-    
+
     # Extract structured product details
     .structure("product_info")
         .field("name", dtype="str")
@@ -450,8 +450,8 @@ text = "Apple CEO Tim Cook unveiled the revolutionary iPhone 15 Pro for $999. Th
 results = extractor.extract(text, schema)
 # Output: {
 #     'entities': {
-#         'person': ['Tim Cook'], 
-#         'company': ['Apple'], 
+#         'person': ['Tim Cook'],
+#         'company': ['Apple'],
 #         'product': ['iPhone 15 Pro']
 #     },
 #     'sentiment': 'positive',
@@ -475,7 +475,7 @@ results = extractor.extract(text, schema)
 
 ```python
 financial_text = """
-Transaction Report: Goldman Sachs processed a $2.5M equity trade for Tesla Inc. 
+Transaction Report: Goldman Sachs processed a $2.5M equity trade for Tesla Inc.
 on March 15, 2024. Commission: $1,250. Status: Completed.
 """
 
@@ -488,7 +488,7 @@ result = extractor.extract_json(
             "amount::str::Transaction amount with currency",
             "security::str::Stock, bond, or financial instrument",
             "date::str::Transaction date",
-            "commission::str::Fees or commission charged", 
+            "commission::str::Fees or commission charged",
             "status::str::Transaction status",
             "type::[equity|bond|option|future|forex]::str::Type of financial instrument"
         ]
@@ -497,7 +497,7 @@ result = extractor.extract_json(
 # Output: {
 #     'transaction': [{
 #         'broker': 'Goldman Sachs',
-#         'amount': '$2.5M', 
+#         'amount': '$2.5M',
 #         'security': 'Tesla Inc.',
 #         'date': 'March 15, 2024',
 #         'commission': '$1,250',
@@ -584,7 +584,7 @@ results = extractor.extract(contract_text, schema)
 #         'parties': ['TechCorp LLC', 'DataSystems Inc.'],
 #         'effective_date': 'January 1, 2024',
 #         'monthly_fee': '$15,000',
-#         'term_length': '24 months', 
+#         'term_length': '24 months',
 #         'renewal': 'automatic',
 #         'termination_notice': '30-day written notice'
 #     }]
@@ -638,7 +638,7 @@ result = extractor.extract_json(
     {
         "financial_data": [
             "account_number::str::Bank account number",  # default threshold
-            "amount::str::Transaction amount",           # default threshold  
+            "amount::str::Transaction amount",           # default threshold
             "routing_number::str::Bank routing number"   # default threshold
         ]
     },
@@ -649,7 +649,7 @@ result = extractor.extract_json(
 schema = (extractor.create_schema()
     .structure("sensitive_data")
         .field("ssn", dtype="str", threshold=0.95)         # Highest precision
-        .field("email", dtype="str", threshold=0.8)        # Medium precision  
+        .field("email", dtype="str", threshold=0.8)        # Medium precision
         .field("phone", dtype="str", threshold=0.7)        # Lower precision
 )
 ```
@@ -664,7 +664,7 @@ result = extractor.extract_json(
         "subscription": [
             "tier::[basic|premium|enterprise]::str::Subscription level",
             "price::str::Monthly or annual cost",
-            "billing::[monthly|annual]::str::Billing frequency", 
+            "billing::[monthly|annual]::str::Billing frequency",
             "features::[mobile|web|api|analytics]::list::Included features"
         ]
     }
@@ -672,7 +672,7 @@ result = extractor.extract_json(
 # Output: {
 #     'subscription': [{
 #         'tier': 'premium',
-#         'price': '$99/month', 
+#         'price': '$99/month',
 #         'billing': 'monthly',
 #         'features': ['mobile', 'web']
 #     }]
@@ -898,7 +898,7 @@ config = TrainingConfig(
     batch_size=8,
     encoder_lr=1e-5,
     task_lr=5e-4,
-    
+
     # LoRA settings
     use_lora=True,                    # Enable LoRA
     lora_r=8,                         # Rank (4, 8, 16, 32)

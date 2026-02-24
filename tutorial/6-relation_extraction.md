@@ -74,7 +74,7 @@ You can extract multiple relation types in a single call:
 
 ```python
 text = """
-Sarah founded TechCorp in 2020. She is married to Mike, 
+Sarah founded TechCorp in 2020. She is married to Mike,
 who works at Google. TechCorp is located in Seattle.
 """
 
@@ -98,7 +98,7 @@ GLiNER2 automatically extracts all relation instances found in the text:
 
 ```python
 text = """
-John works for Microsoft. Mary works for Google. 
+John works for Microsoft. Mary works for Google.
 Bob works for Apple. All three live in California.
 """
 
@@ -349,8 +349,8 @@ schema = (extractor.create_schema()
 )
 
 text = """
-BREAKING: Microsoft announced today that it acquired GitHub. 
-Satya Nadella, CEO of Microsoft, confirmed the deal. 
+BREAKING: Microsoft announced today that it acquired GitHub.
+Satya Nadella, CEO of Microsoft, confirmed the deal.
 The acquisition was finalized on October 26, 2018.
 """
 
@@ -468,8 +468,8 @@ academic_schema = extractor.create_schema().relations({
 })
 
 text = """
-Dr. Johnson authored the paper on machine learning. The paper cited 
-previous work by Dr. Smith. Dr. Johnson supervises graduate students 
+Dr. Johnson authored the paper on machine learning. The paper cited
+previous work by Dr. Smith. Dr. Johnson supervises graduate students
 at MIT, where she is affiliated with the Computer Science department.
 """
 
@@ -591,7 +591,7 @@ Make sure your relation names match the expected direction.
 schema = (extractor.create_schema()
     .entities(["person", "organization", "location", "product"])
     .relations([
-        "works_for", "founded", "located_in", "created", 
+        "works_for", "founded", "located_in", "created",
         "acquired", "partnered_with"
     ])
 )
@@ -640,4 +640,3 @@ schema = (extractor.create_schema()
 # Extract all information types in one pass
 results = extractor.extract(document_text, schema)
 ```
-

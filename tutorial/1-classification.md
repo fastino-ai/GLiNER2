@@ -30,7 +30,7 @@ The simplest form - classify text into one of several categories.
 ```python
 # Define the schema
 schema = extractor.create_schema().classification(
-    "sentiment", 
+    "sentiment",
     ["positive", "negative", "neutral"]
 )
 
@@ -46,7 +46,7 @@ print(results)
 ```python
 # Same schema as above
 schema = extractor.create_schema().classification(
-    "sentiment", 
+    "sentiment",
     ["positive", "negative", "neutral"]
 )
 
@@ -238,9 +238,9 @@ schema = (extractor.create_schema()
     # Single-label classifications
     .classification("primary_topic", ["tech", "business", "health", "sports", "politics"])
     .classification("urgency", ["immediate", "soon", "later", "not_urgent"])
-    
+
     # Multi-label classifications
-    .classification("emotions", 
+    .classification("emotions",
         ["happy", "sad", "angry", "surprised", "fearful", "disgusted"],
         multi_label=True,
         cls_threshold=0.4
@@ -279,9 +279,9 @@ print(results2)
 ```python
 # Customer support ticket classification
 support_schema = (extractor.create_schema()
-    .classification("ticket_type", 
+    .classification("ticket_type",
         ["technical_issue", "billing", "feature_request", "bug_report", "other"])
-    .classification("priority", 
+    .classification("priority",
         ["critical", "high", "medium", "low"],
         cls_threshold=0.7
     )
@@ -309,9 +309,9 @@ support_schema = (extractor.create_schema()
 ticket_text = """
 Subject: Cannot login - Urgent!
 
-I've been trying to login for the past hour but keep getting error messages. 
-This is critical as I need to process payments for my customers today. 
-The page just keeps spinning and then times out. I'm extremely frustrated 
+I've been trying to login for the past hour but keep getting error messages.
+This is critical as I need to process payments for my customers today.
+The page just keeps spinning and then times out. I'm extremely frustrated
 as this is costing me business. Please fix this immediately!
 """
 
@@ -329,7 +329,7 @@ print(results)
 ticket_text2 = """
 Hi team,
 
-Thanks for the great product! I was wondering if you could add a dark mode feature? 
+Thanks for the great product! I was wondering if you could add a dark mode feature?
 It would really help with eye strain during late night work sessions.
 
 Best regards,
@@ -357,7 +357,7 @@ email_schema = (extractor.create_schema()
         ["sales", "support", "hr", "legal", "general"],
         cls_threshold=0.6
     )
-    
+
     # Secondary classifications based on context
     .classification("sales_stage",
         ["lead", "qualified", "proposal", "negotiation", "closed"],
@@ -367,7 +367,7 @@ email_schema = (extractor.create_schema()
         ["pre_sales", "technical", "account", "billing"],
         cls_threshold=0.5
     )
-    
+
     # Action classifications
     .classification("required_action",
         ["reply_needed", "forward_to_team", "schedule_meeting", "no_action"],
@@ -383,8 +383,8 @@ email_schema = (extractor.create_schema()
 email = """
 Hi Sales Team,
 
-I'm interested in your enterprise solution. We're currently evaluating vendors 
-for our upcoming project. Could we schedule a demo next week? We need to make 
+I'm interested in your enterprise solution. We're currently evaluating vendors
+for our upcoming project. Could we schedule a demo next week? We need to make
 a decision by month end.
 
 Best regards,
@@ -405,8 +405,8 @@ print(results)
 email2 = """
 Dear HR Department,
 
-I need to update my tax withholding information. Could someone please send me 
-the necessary forms? This is somewhat urgent as I need this changed before the 
+I need to update my tax withholding information. Could someone please send me
+the necessary forms? This is somewhat urgent as I need this changed before the
 next payroll cycle.
 
 Thank you,
@@ -434,7 +434,7 @@ content_schema = (extractor.create_schema()
         ["article", "comment", "review", "social_post", "message"])
     .classification("primary_language",
         ["english", "spanish", "french", "other"])
-    
+
     # Quality assessments
     .classification("quality_score",
         ["excellent", "good", "average", "poor", "spam"],
@@ -444,7 +444,7 @@ content_schema = (extractor.create_schema()
         ["original", "derivative", "duplicate", "plagiarized"],
         cls_threshold=0.8
     )
-    
+
     # Safety and compliance
     .classification("safety_flags",
         {
@@ -457,7 +457,7 @@ content_schema = (extractor.create_schema()
         multi_label=True,
         cls_threshold=0.3
     )
-    
+
     # Engagement predictions
     .classification("engagement_potential",
         ["viral", "high", "medium", "low"],
@@ -471,9 +471,9 @@ content_schema = (extractor.create_schema()
 )
 
 content_text = """
-Just discovered this amazing productivity hack that doubled my output! 
-Here's what I do: I wake up at 5 AM, meditate for 20 minutes, then work 
-in 90-minute focused blocks. The results have been incredible. My email 
+Just discovered this amazing productivity hack that doubled my output!
+Here's what I do: I wake up at 5 AM, meditate for 20 minutes, then work
+in 90-minute focused blocks. The results have been incredible. My email
 is john.doe@example.com if you want more tips!
 """
 
@@ -491,7 +491,7 @@ print(results)
 
 # Review example
 review_text = """
-Worst product ever!!! Total scam! Don't buy this garbage. The company should 
+Worst product ever!!! Total scam! Don't buy this garbage. The company should
 be shut down for selling this junk. I'm going to report them to authorities.
 """
 
@@ -577,9 +577,9 @@ schema = extractor.create_schema().classification(
 email_text = """
 Hi team,
 
-Quick update on Project Alpha: We're ahead of schedule! 
+Quick update on Project Alpha: We're ahead of schedule!
 
-However, I need your input on the design mockups by EOD tomorrow. 
+However, I need your input on the design mockups by EOD tomorrow.
 Can we schedule a 30-min call this week to discuss?
 
 This is quite urgent as the client is waiting.
@@ -598,7 +598,7 @@ print(results)
 email_text2 = """
 Team,
 
-Just wanted to let everyone know that I'll be out of office next Monday for a 
+Just wanted to let everyone know that I'll be out of office next Monday for a
 doctor's appointment. I'll be back Tuesday morning.
 
 Thanks,
@@ -625,7 +625,7 @@ print(results2)
            "inquiry": "User asking for information"
        }
    )
-   
+
    # Less effective - no context
    schema = extractor.create_schema().classification(
        "intent",
@@ -643,7 +643,7 @@ print(results2)
        ["waterproof", "wireless", "rechargeable", "portable"],
        multi_label=True
    )
-   
+
    # Should be single-label
    schema = extractor.create_schema().classification(
        "size",
