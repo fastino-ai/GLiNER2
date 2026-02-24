@@ -494,30 +494,30 @@ config = TrainingConfig(
     # Output
     output_dir="./output",
     experiment_name="my_experiment",
-    
+
     # Training
     num_epochs=10,
     batch_size=32,
     gradient_accumulation_steps=1,
-    
+
     # Learning rates
     encoder_lr=1e-5,
     task_lr=5e-4,
-    
+
     # Optimization
     weight_decay=0.01,
     max_grad_norm=1.0,
     scheduler_type="linear",
     warmup_ratio=0.1,
-    
+
     # Mixed precision
     fp16=True,
-    
+
     # Checkpointing & Evaluation (saves when evaluating)
     eval_strategy="epoch",  # "epoch", "steps", or "no"
     eval_steps=500,  # Used when eval_strategy="steps"
     save_best=True,
-    
+
     # Logging
     logging_steps=50,
     report_to_wandb=False,
@@ -587,37 +587,37 @@ config = TrainingConfig(
     # Output
     output_dir="./output",
     experiment_name="gliner2",
-    
+
     # Training steps
     num_epochs=10,
     max_steps=-1,
-    
+
     # Batch size
     batch_size=32,
     eval_batch_size=64,
     gradient_accumulation_steps=1,
-    
+
     # Learning rates
     encoder_lr=1e-5,
     task_lr=5e-4,
-    
+
     # Optimizer
     weight_decay=0.01,
     adam_beta1=0.9,
     adam_beta2=0.999,
     adam_epsilon=1e-8,
     max_grad_norm=1.0,
-    
+
     # Learning rate schedule
     scheduler_type="linear",  # "linear", "cosine", "cosine_restarts", "constant"
     warmup_ratio=0.1,
     warmup_steps=0,
     num_cycles=0.5,
-    
+
     # Mixed precision
     fp16=True,
     bf16=False,
-    
+
     # Checkpointing & Evaluation (saves when evaluating)
     eval_strategy="steps",  # "epoch", "steps", or "no" (default: "steps")
     eval_steps=500,  # Evaluate and save every N steps (when eval_strategy="steps")
@@ -625,7 +625,7 @@ config = TrainingConfig(
     save_best=True,
     metric_for_best="eval_loss",
     greater_is_better=False,
-    
+
     # Logging
     logging_steps=50,  # Update progress bar metrics every N steps
     # Metrics (loss, learning rate, throughput) are shown in the progress bar
@@ -636,17 +636,17 @@ config = TrainingConfig(
     wandb_run_name=None,
     wandb_tags=[],
     wandb_notes=None,
-    
+
     # Early stopping
     early_stopping=False,
     early_stopping_patience=3,
     early_stopping_threshold=0.0,
-    
+
     # DataLoader
     num_workers=4,
     pin_memory=True,
     prefetch_factor=2,
-    
+
     # Other
     seed=42,
     deterministic=False,
@@ -655,7 +655,7 @@ config = TrainingConfig(
     max_eval_samples=-1,
     validate_data=True,
     strict_validation=False,
-    
+
     # LoRA (see LoRA section)
     use_lora=False,
     lora_r=16,
@@ -715,7 +715,7 @@ config = TrainingConfig(
     output_dir="./output_lora",
     num_epochs=10,
     batch_size=16,
-    
+
     # Enable LoRA
     use_lora=True,
     lora_r=16,              # Rank (higher = more params, better approximation)
@@ -723,11 +723,11 @@ config = TrainingConfig(
     lora_dropout=0.1,       # Dropout for regularization
     lora_target_modules=["encoder"],  # All encoder layers (query, key, value, dense)
     save_adapter_only=True, # Save only adapter weights (not full model)
-    
+
     # Learning rate (task_lr used for LoRA + task heads when LoRA enabled)
     task_lr=5e-4,
     # encoder_lr is ignored when LoRA is enabled
-    
+
     # Other settings
     fp16=True,
     eval_strategy="epoch",  # Evaluates and saves at end of each epoch
@@ -748,24 +748,24 @@ best_model = GLiNER2.from_pretrained("./output_lora/best")
 config = TrainingConfig(
     # Enable LoRA
     use_lora=True,
-    
+
     # LoRA rank (r): Controls the rank of low-rank decomposition
     # Higher r = more parameters but better approximation
     # Typical values: 4, 8, 16, 32, 64
     # Start with 8 or 16 for most tasks
     lora_r=16,
-    
+
     # LoRA alpha: Scaling factor for LoRA updates
     # Final scaling is alpha/r
     # Typical values: 8, 16, 32 (often 2*r)
     # Common practice: alpha = 2 * r
     lora_alpha=32,
-    
+
     # LoRA dropout: Dropout probability applied to LoRA path
     # Helps prevent overfitting
     # Typical values: 0.0, 0.05, 0.1
     lora_dropout=0.1,
-    
+
     # Target modules: Which module groups to apply LoRA to
     # Module groups:
     #   - "encoder": All encoder layers (query, key, value, dense)
@@ -787,12 +787,12 @@ config = TrainingConfig(
     #
     # Default: All modules for maximum adaptation capacity
     lora_target_modules=["encoder", "span_rep", "classifier", "count_embed", "count_pred"],
-    
+
     # Save adapter only (recommended)
     # When True: saves only LoRA adapter weights (~2-10 MB)
     # When False: saves full model with merged weights (~100-500 MB)
     save_adapter_only=True,
-    
+
     # Learning rate for LoRA parameters
     # When LoRA is enabled, task_lr is used for both LoRA and task-specific heads
     task_lr=5e-4,  # Typical: 1e-4 to 1e-3
@@ -906,13 +906,13 @@ def compute_metrics(model, eval_dataset):
     """Custom metric computation function."""
     # Your custom evaluation logic
     # For example, compute F1 score on entities
-    
+
     metrics = {}
     # ... compute metrics ...
     metrics["f1"] = 0.85
     metrics["precision"] = 0.87
     metrics["recall"] = 0.83
-    
+
     return metrics
 
 trainer = GLiNER2Trainer(
@@ -1011,7 +1011,7 @@ from gliner2.training.data import InputExample, TrainingDataset
 def augment_example(example: InputExample) -> List[InputExample]:
     """Create augmented versions of an example."""
     augmented = [example]  # Original
-    
+
     # Shuffle entity order
     if len(example.entities) > 1:
         shuffled_entities = dict(sorted(example.entities.items(), reverse=True))
@@ -1019,7 +1019,7 @@ def augment_example(example: InputExample) -> List[InputExample]:
             text=example.text,
             entities=shuffled_entities
         ))
-    
+
     return augmented
 
 # Apply augmentation

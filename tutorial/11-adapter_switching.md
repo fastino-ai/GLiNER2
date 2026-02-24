@@ -42,7 +42,7 @@ The adapter path should point to a directory containing:
 # Check if adapter is loaded
 if model.has_adapter:
     print("Adapter is loaded")
-    
+
 # Get adapter configuration
 config = model.adapter_config
 print(f"LoRA rank: {config.lora_r}")
@@ -83,21 +83,21 @@ Route documents to appropriate adapters:
 def extract_with_routing(model, text, doc_type, adapters):
     """Route document to domain-specific adapter."""
     adapter_path = adapters.get(doc_type)
-    
+
     if adapter_path:
         model.load_adapter(adapter_path)
     else:
         model.unload_adapter()  # Use base model
-    
+
     # Define entity types per domain
     entity_types = {
         "legal": ["company", "person", "law"],
         "medical": ["disease", "drug", "symptom"],
         "support": ["order_id", "customer", "issue"]
     }
-    
+
     return model.extract_entities(
-        text, 
+        text,
         entity_types.get(doc_type, ["entity"])
     )
 
@@ -111,9 +111,9 @@ adapters = {
 
 # Use
 result = extract_with_routing(
-    model, 
-    "Apple sued Google", 
-    "legal", 
+    model,
+    "Apple sued Google",
+    "legal",
     adapters
 )
 ```
@@ -126,17 +126,17 @@ Process multiple documents efficiently:
 def process_by_domain(model, documents, adapters):
     """Process documents grouped by domain."""
     results = {}
-    
+
     for domain, docs in documents.items():
         # Load domain adapter
         model.load_adapter(adapters[domain])
-        
+
         # Process all documents for this domain
         results[domain] = [
             model.extract_entities(doc, get_entity_types(domain))
             for doc in docs
         ]
-    
+
     return results
 
 # Example
@@ -158,12 +158,12 @@ results = process_by_domain(model, documents, adapters)
 ```python
 class AdapterRouter:
     """Simple adapter router for multi-domain inference."""
-    
+
     def __init__(self, base_model_name, adapters):
         self.model = GLiNER2.from_pretrained(base_model_name)
         self.adapters = adapters
         self.current_domain = None
-    
+
     def extract(self, text, domain, entity_types):
         """Extract entities using domain-specific adapter."""
         # Load adapter if domain changed
@@ -174,7 +174,7 @@ class AdapterRouter:
             else:
                 self.model.unload_adapter()
             self.current_domain = domain
-        
+
         return self.model.extract_entities(text, entity_types)
 
 # Usage
@@ -198,4 +198,3 @@ result = router.extract("Apple sued Google", "legal", ["company"])
 - **Auto-swap**: Loading a new adapter automatically unloads the previous one
 
 For training adapters, see [Tutorial 10: LoRA Adapters](10-lora_adapters.md).
-

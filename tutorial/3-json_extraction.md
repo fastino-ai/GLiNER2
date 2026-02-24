@@ -92,7 +92,7 @@ Fields support flexible specifications using `::` separators:
 
 ```python
 text = """
-Tech Conference 2024 on June 15th in San Francisco. 
+Tech Conference 2024 on June 15th in San Francisco.
 Topics include AI, Machine Learning, and Cloud Computing.
 Registration fee: $299 for early bird tickets.
 """
@@ -124,7 +124,7 @@ results = extractor.extract_json(
 
 ```python
 text = """
-Reservation at Le Bernardin for 4 people on March 15th at 7:30 PM. 
+Reservation at Le Bernardin for 4 people on March 15th at 7:30 PM.
 We'd prefer outdoor seating. Two guests are vegetarian and one is gluten-free.
 """
 
@@ -163,7 +163,7 @@ GLiNER2 automatically extracts ALL instances of a structure found in text:
 text = """
 Recent transactions:
 - Jan 5: Starbucks $5.50 (food)
-- Jan 5: Uber $23.00 (transport)  
+- Jan 5: Uber $23.00 (transport)
 - Jan 6: Amazon $156.99 (shopping)
 """
 
@@ -191,10 +191,10 @@ results = extractor.extract_json(
 
 ```python
 text = """
-Alice Brown booked the Hilton Downtown from March 10 to March 12. She selected a double room 
+Alice Brown booked the Hilton Downtown from March 10 to March 12. She selected a double room
 for $340 total with breakfast and parking included.
 
-Robert Taylor reserved The Grand Hotel, April 1 to April 5, suite at $1,200 total. 
+Robert Taylor reserved The Grand Hotel, April 1 to April 5, suite at $1,200 total.
 Amenities include breakfast, wifi, gym, and spa access.
 """
 
@@ -205,7 +205,7 @@ results = extractor.extract_json(
             "guest::str::Guest name",
             "hotel::str::Hotel name",
             "check_in::str",
-            "check_out::str", 
+            "check_out::str",
             "room_type::[single|double|suite|deluxe]::str",
             "total_price::str",
             "amenities::[breakfast|wifi|parking|gym|spa]::list"
@@ -216,7 +216,7 @@ results = extractor.extract_json(
 #     'booking': [
 #         {
 #             'guest': 'Alice Brown',
-#             'hotel': 'Hilton Downtown', 
+#             'hotel': 'Hilton Downtown',
 #             'check_in': 'March 10',
 #             'check_out': 'March 12',
 #             'room_type': 'double',
@@ -228,7 +228,7 @@ results = extractor.extract_json(
 #             'hotel': 'The Grand Hotel',
 #             'check_in': 'April 1',
 #             'check_out': 'April 5',
-#             'room_type': 'suite', 
+#             'room_type': 'suite',
 #             'total_price': '$1,200',
 #             'amenities': ['breakfast', 'wifi', 'gym', 'spa']
 #         }
@@ -247,10 +247,10 @@ Use `create_schema()` only when combining structured extraction with other tasks
 schema = (extractor.create_schema()
     # Extract entities
     .entities(["person", "company", "location"])
-    
+
     # Classify sentiment
     .classification("sentiment", ["positive", "negative", "neutral"])
-    
+
     # Extract structured product info
     .structure("product")
         .field("name", dtype="str")
@@ -266,7 +266,7 @@ results = extractor.extract(text, schema)
 #     'sentiment': 'positive',
 #     'product': [{
 #         'name': 'iPhone 15',
-#         'price': '$999', 
+#         'price': '$999',
 #         'features': ['amazing new features'],
 #         'category': 'electronics'
 #     }]
@@ -278,8 +278,8 @@ results = extractor.extract(text, schema)
 ```python
 schema = (extractor.create_schema()
     .classification("urgency", ["low", "medium", "high"])
-    
-    .structure("support_ticket")  
+
+    .structure("support_ticket")
         .field("ticket_id", dtype="str", threshold=0.9)      # High precision
         .field("customer", dtype="str", description="Customer name")
         .field("issue", dtype="str", description="Problem description")
@@ -294,7 +294,7 @@ schema = (extractor.create_schema()
 
 ```python
 text = """
-Goldman Sachs processed a $2.5M equity trade for Tesla Inc. on March 15, 2024. 
+Goldman Sachs processed a $2.5M equity trade for Tesla Inc. on March 15, 2024.
 Commission: $1,250. Status: Completed.
 """
 
@@ -304,7 +304,7 @@ results = extractor.extract_json(
         "transaction": [
             "broker::str::Financial institution",
             "amount::str::Transaction amount",
-            "security::str::Stock or financial instrument", 
+            "security::str::Stock or financial instrument",
             "date::str::Transaction date",
             "commission::str::Fees charged",
             "status::[pending|completed|failed]::str",
@@ -318,7 +318,7 @@ results = extractor.extract_json(
 #         'amount': '$2.5M',
 #         'security': 'Tesla Inc.',
 #         'date': 'March 15, 2024',
-#         'commission': '$1,250', 
+#         'commission': '$1,250',
 #         'status': 'completed',
 #         'type': 'equity'
 #     }]
@@ -339,7 +339,7 @@ results = extractor.extract_json(
     {
         "patient": [
             "name::str::Patient full name",
-            "age::str::Patient age", 
+            "age::str::Patient age",
             "symptoms::list::Reported symptoms"
         ],
         "prescription": [
@@ -379,7 +379,7 @@ results = extractor.extract_json(
             "order_id::str::Order number",
             "customer::str::Customer name",
             "items::list::Product names",
-            "quantities::list::Item quantities", 
+            "quantities::list::Item quantities",
             "unit_prices::list::Individual prices",
             "subtotal::str",
             "tax::str",
@@ -396,7 +396,7 @@ results = extractor.extract_json(
 #         'quantities': ['2', '1', '3'],
 #         'unit_prices': ['$45.99', '$29.99', '$35.50'],
 #         'subtotal': '$228.46',
-#         'tax': '$18.28', 
+#         'tax': '$18.28',
 #         'total': '$246.74',
 #         'status': 'processing'
 #     }]
@@ -498,7 +498,7 @@ results = extractor.extract_json(
 - Quick data parsing
 - Single extraction task
 
-**Use `create_schema().extract()`** for:  
+**Use `create_schema().extract()`** for:
 - Multi-task scenarios (entities + structures + classification)
 - When you need entities or classification alongside structures
 - Complex extraction pipelines

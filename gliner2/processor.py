@@ -13,14 +13,15 @@ from typing import Any, Dict, Tuple, Iterator, List
 import torch
 from transformers import AutoTokenizer
 
-
 # =============================================================================
 # Data Structures
 # =============================================================================
 
+
 @dataclass
 class TransformedRecord:
     """Single transformed record ready for batching."""
+
     input_ids: List[int]
     mapped_indices: List[Tuple[str, int, int]]
     schema_tokens_list: List[List[str]]
@@ -40,6 +41,7 @@ class TransformedRecord:
 @dataclass
 class PreprocessedBatch:
     """GPU-ready batch for training/inference."""
+
     input_ids: torch.Tensor  # (batch, max_seq_len)
     attention_mask: torch.Tensor  # (batch, max_seq_len)
     mapped_indices: List[List[Tuple]]  # Per-sample token mappings
@@ -54,7 +56,7 @@ class PreprocessedBatch:
     original_texts: List[str]  # For result formatting
     original_schemas: List[Dict]  # For result formatting
 
-    def to(self, device: torch.device) -> 'PreprocessedBatch':
+    def to(self, device: torch.device) -> "PreprocessedBatch":
         """Move tensors to device."""
         return PreprocessedBatch(
             input_ids=self.input_ids.to(device),
@@ -72,7 +74,7 @@ class PreprocessedBatch:
             original_schemas=self.original_schemas,
         )
 
-    def pin_memory(self) -> 'PreprocessedBatch':
+    def pin_memory(self) -> "PreprocessedBatch":
         """Pin tensors to memory for faster GPU transfer."""
         return PreprocessedBatch(
             input_ids=self.input_ids.pin_memory(),
@@ -112,8 +114,10 @@ class PreprocessedBatch:
 # Tokenizer
 # =============================================================================
 
+
 class WhitespaceTokenSplitter:
     """Fast regex-based tokenizer for text splitting."""
+
     __slots__ = ()
 
     _PATTERN = re.compile(
@@ -136,9 +140,11 @@ class WhitespaceTokenSplitter:
 # Sampling Configuration
 # =============================================================================
 
+
 @dataclass
 class SamplingConfig:
     """Configuration for stochastic sampling during training."""
+
     # JSON Structures
     remove_json_structure_prob: float = 0.2
     shuffle_json_fields: bool = True
@@ -164,6 +170,7 @@ class SamplingConfig:
 # Main Processor Class
 # =============================================================================
 
+
 class SchemaTransformer:
     """
     Schema-based text transformer for GLiNER2.
@@ -185,35 +192,51 @@ class SchemaTransformer:
     DESC_TOKEN = "[DESCRIPTION]"
 
     SPECIAL_TOKENS = [
-        SEP_STRUCT, SEP_TEXT, P_TOKEN, C_TOKEN, E_TOKEN,
-        R_TOKEN, L_TOKEN, EXAMPLE_TOKEN, OUTPUT_TOKEN, DESC_TOKEN
+        SEP_STRUCT,
+        SEP_TEXT,
+        P_TOKEN,
+        C_TOKEN,
+        E_TOKEN,
+        R_TOKEN,
+        L_TOKEN,
+        EXAMPLE_TOKEN,
+        OUTPUT_TOKEN,
+        DESC_TOKEN,
     ]
 
     def __init__(
-            self,
-            model_name: str = None,
-            tokenizer=None,
-            sampling_config: SamplingConfig = None,
-            token_pooling: str = "first"
+        self,
+        model_name: str = None,
+        tokenizer=None,
+        sampling_config: SamplingConfig = None,
+        token_pooling: str = "first",
     ):
         if model_name is None and tokenizer is None:
             raise ValueError("Either model_name or tokenizer must be provided.")
 
-        self.token_pooling = token_pooling if token_pooling in ["first", "mean", "max"] else "first"
+        self.token_pooling = (
+            token_pooling if token_pooling in ["first", "mean", "max"] else "first"
+        )
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
         self.word_splitter = WhitespaceTokenSplitter()
         self.sampling_config = sampling_config or SamplingConfig()
         self.is_training = False
 
         # Add special tokens
-        self.tokenizer.add_special_tokens({
-            "additional_special_tokens": self.SPECIAL_TOKENS
-        })
+        self.tokenizer.add_special_tokens(
+            {"additional_special_tokens": self.SPECIAL_TOKENS}
+        )
 
         # OPT-1: Pre-compute special token IDs for fast lookup in embedding extraction
         self._special_ids = frozenset(
             self.tokenizer.convert_tokens_to_ids(t)
-            for t in (self.P_TOKEN, self.C_TOKEN, self.E_TOKEN, self.R_TOKEN, self.L_TOKEN)
+            for t in (
+                self.P_TOKEN,
+                self.C_TOKEN,
+                self.E_TOKEN,
+                self.R_TOKEN,
+                self.L_TOKEN,
+            )
         )
 
         # OPT-6: Cache tokenized forms of special tokens and common punctuation
@@ -229,10 +252,7 @@ class SchemaTransformer:
     # Main Public API: Collate Functions
     # =========================================================================
 
-    def collate_fn_train(
-            self,
-            batch: List[Tuple[str, Dict]]
-    ) -> PreprocessedBatch:
+    def collate_fn_train(self, batch: List[Tuple[str, Dict]]) -> PreprocessedBatch:
         """
         Collate function for training DataLoader.
 
@@ -254,10 +274,7 @@ class SchemaTransformer:
         self.is_training = True
         return self._collate_batch(batch)
 
-    def collate_fn_inference(
-            self,
-            batch: List[Tuple[str, Any]]
-    ) -> PreprocessedBatch:
+    def collate_fn_inference(self, batch: List[Tuple[str, Any]]) -> PreprocessedBatch:
         """
         Collate function for inference DataLoader.
 
@@ -271,9 +288,7 @@ class SchemaTransformer:
         return self._collate_batch(batch)
 
     def transform_and_format(
-            self,
-            text: str,
-            schema: Dict[str, Any]
+        self, text: str, schema: Dict[str, Any]
     ) -> TransformedRecord:
         """
         Transform and format a single record.
@@ -295,22 +310,19 @@ class SchemaTransformer:
     # Internal: Batch Processing
     # =========================================================================
 
-    def _collate_batch(
-            self,
-            batch: List[Tuple[str, Any]]
-    ) -> PreprocessedBatch:
+    def _collate_batch(self, batch: List[Tuple[str, Any]]) -> PreprocessedBatch:
         """Internal collate implementation."""
         transformed_records = []
 
         for text, schema in batch:
             # Handle Schema objects
-            if hasattr(schema, 'build'):
+            if hasattr(schema, "build"):
                 schema = schema.build()
-            elif hasattr(schema, 'schema'):
+            elif hasattr(schema, "schema"):
                 schema = schema.schema
 
             # Ensure text ends with punctuation
-            if text and not text.endswith(('.', '!', '?')):
+            if text and not text.endswith((".", "!", "?")):
                 text = text + "."
             elif not text:
                 text = "."
@@ -320,7 +332,7 @@ class SchemaTransformer:
             try:
                 transformed = self._transform_record(record)
                 transformed_records.append(transformed)
-            except Exception as e:
+            except Exception:
                 # Create minimal fallback record
                 transformed_records.append(self._create_fallback_record(text, schema))
 
@@ -360,9 +372,7 @@ class SchemaTransformer:
         processed = self._infer_from_json(schema)
 
         # Build outputs
-        results = self._build_outputs(
-            processed, schema, text_tokens, len_prefix
-        )
+        results = self._build_outputs(processed, schema, text_tokens, len_prefix)
 
         # Format input
         schema_tokens_list = [r["schema_tokens"] for r in results]
@@ -381,10 +391,7 @@ class SchemaTransformer:
             schema=original_schema,  # Use original schema with choice info preserved
         )
 
-    def _pad_batch(
-            self,
-            records: List[TransformedRecord]
-    ) -> PreprocessedBatch:
+    def _pad_batch(self, records: List[TransformedRecord]) -> PreprocessedBatch:
         """Pad transformed records into a batch."""
         if not records:
             return self._empty_batch()
@@ -439,9 +446,7 @@ class SchemaTransformer:
 
     def _create_fallback_record(self, text: str, schema: Dict) -> TransformedRecord:
         """Create minimal valid record for failed transformations."""
-        dummy_tokens = [
-            "(", "[P]", "dummy", "(", "[E]", "entity", ")", ")"
-        ]
+        dummy_tokens = ["(", "[P]", "dummy", "(", "[E]", "entity", ")", ")"]
         format_result = self._format_input_with_mapping([dummy_tokens], ["."])
 
         return TransformedRecord(
@@ -468,7 +473,8 @@ class SchemaTransformer:
         for struct in schema.get("json_structures", []):
             for parent, fields in struct.items():
                 cls_fields = [
-                    (fname, fval) for fname, fval in fields.items()
+                    (fname, fval)
+                    for fname, fval in fields.items()
                     if isinstance(fval, dict) and "value" in fval and "choices" in fval
                 ]
 
@@ -484,14 +490,14 @@ class SchemaTransformer:
                     choice_tokens = []
                     for i, c in enumerate(choices):
                         if i > 0:
-                            choice_tokens.append('|')
+                            choice_tokens.append("|")
                         choice_tokens.append(c)
 
-                    inner.extend([fname, '('] + choice_tokens + [')', ','])
+                    inner.extend([fname, "("] + choice_tokens + [")", ","])
 
                 if inner:
                     inner = inner[:-1]
-                    prefix_tokens.extend(['(', f"{parent}:", *inner, ')'])
+                    prefix_tokens.extend(["(", f"{parent}:", *inner, ")"])
 
         return prefix_tokens
 
@@ -553,7 +559,7 @@ class SchemaTransformer:
             "schemas": schemas,
             "structure_labels": labels,
             "task_types": types,
-            "new_schema": schema
+            "new_schema": schema,
         }
 
     def _process_json_structures(self, schema, schemas, labels, types, sampling):
@@ -580,9 +586,11 @@ class SchemaTransformer:
             if sampling and sampling.shuffle_json_fields:
                 random.shuffle(common)
 
-            chosen = [f for f in common if not (
-                    sampling and random.random() < sampling.remove_json_field_prob
-            )]
+            chosen = [
+                f
+                for f in common
+                if not (sampling and random.random() < sampling.remove_json_field_prob)
+            ]
             if not chosen:
                 continue
 
@@ -625,13 +633,21 @@ class SchemaTransformer:
 
             labels.append([count, uniq])
 
-            mode = random.choice(example_modes) if self.is_training else (
-                "descriptions" if descs else "none"
+            mode = (
+                random.choice(example_modes)
+                if self.is_training
+                else ("descriptions" if descs else "none")
             )
 
-            schemas.append(self._transform_schema(
-                parent, chosen, self.C_TOKEN, label_descriptions=descs, example_mode=mode
-            ))
+            schemas.append(
+                self._transform_schema(
+                    parent,
+                    chosen,
+                    self.C_TOKEN,
+                    label_descriptions=descs,
+                    example_mode=mode,
+                )
+            )
             types.append("json_structures")
 
     def _process_entities(self, schema, schemas, labels, types, sampling):
@@ -655,27 +671,39 @@ class SchemaTransformer:
                 real2syn[real] = syn
                 synthetic.append(syn)
             descs = {real2syn.get(k, k): v for k, v in descs.items()}
-            schema["entities"] = {real2syn.get(k, k): v for k, v in schema["entities"].items()}
+            schema["entities"] = {
+                real2syn.get(k, k): v for k, v in schema["entities"].items()
+            }
             entity_fields = synthetic
 
         if sampling and sampling.shuffle_entities:
             random.shuffle(entity_fields)
 
-        chosen = [e for e in entity_fields if not (
-                sampling and random.random() < sampling.remove_entity_prob
-        )]
+        chosen = [
+            e
+            for e in entity_fields
+            if not (sampling and random.random() < sampling.remove_entity_prob)
+        ]
 
         if chosen:
             span = [schema["entities"][e] for e in chosen]
             labels.append([1, [span]])
 
-            mode = random.choice(example_modes) if self.is_training else (
-                "descriptions" if descs else "none"
+            mode = (
+                random.choice(example_modes)
+                if self.is_training
+                else ("descriptions" if descs else "none")
             )
 
-            schemas.append(self._transform_schema(
-                "entities", chosen, self.E_TOKEN, label_descriptions=descs, example_mode=mode
-            ))
+            schemas.append(
+                self._transform_schema(
+                    "entities",
+                    chosen,
+                    self.E_TOKEN,
+                    label_descriptions=descs,
+                    example_mode=mode,
+                )
+            )
             types.append("entities")
 
     def _process_relations(self, schema, schemas, labels, types, sampling):
@@ -697,7 +725,10 @@ class SchemaTransformer:
                 if random.random() < sampling.swap_head_tail_prob:
                     idx_h = field_names.index("head")
                     idx_t = field_names.index("tail")
-                    field_names[idx_h], field_names[idx_t] = field_names[idx_t], field_names[idx_h]
+                    field_names[idx_h], field_names[idx_t] = (
+                        field_names[idx_t],
+                        field_names[idx_h],
+                    )
 
             spans = []
             for occ in occurrences:
@@ -734,7 +765,11 @@ class SchemaTransformer:
             descs = item.get("label_descriptions", {}) or {}
 
             real2syn = {}
-            example_modes = ["few_shot", "descriptions", "both", "none"] if self.is_training else ["both"]
+            example_modes = (
+                ["few_shot", "descriptions", "both", "none"]
+                if self.is_training
+                else ["both"]
+            )
 
             if sampling and random.random() < sampling.synthetic_label_prob:
                 example_modes = [m for m in example_modes if m != "none"]
@@ -751,13 +786,18 @@ class SchemaTransformer:
 
             # Label dropping
             if sampling and hasattr(sampling, "remove_classification_label_prob"):
-                drop_frac = random.betavariate(1, 1) * sampling.remove_classification_label_prob
+                drop_frac = (
+                    random.betavariate(1, 1) * sampling.remove_classification_label_prob
+                )
                 num_remove = int(len(cls_labels) * drop_frac)
                 if num_remove > 0:
                     cls_labels = random.sample(cls_labels, len(cls_labels) - num_remove)
 
-                max_labels = sampling.max_num_labels // 2 if mode in ["few_shot", "both",
-                                                                      "descriptions"] else sampling.max_num_labels
+                max_labels = (
+                    sampling.max_num_labels // 2
+                    if mode in ["few_shot", "both", "descriptions"]
+                    else sampling.max_num_labels
+                )
                 if len(cls_labels) > max_labels:
                     cls_labels = cls_labels[:max_labels]
 
@@ -773,28 +813,36 @@ class SchemaTransformer:
             if sampling and sampling.shuffle_classification_labels:
                 random.shuffle(cls_labels)
 
-            schemas.append(self._transform_schema(
-                item["task"], cls_labels, self.L_TOKEN,
-                prompt=item.get("prompt"), examples=examples,
-                label_descriptions=descs, example_mode=mode
-            ))
+            schemas.append(
+                self._transform_schema(
+                    item["task"],
+                    cls_labels,
+                    self.L_TOKEN,
+                    prompt=item.get("prompt"),
+                    examples=examples,
+                    label_descriptions=descs,
+                    example_mode=mode,
+                )
+            )
             types.append("classifications")
 
             # Update schema
             schema["classifications"][idx]["labels"] = cls_labels
             true_label = schema["classifications"][idx]["true_label"].copy()
-            schema["classifications"][idx]["true_label"] = [real2syn.get(i, i) for i in true_label]
+            schema["classifications"][idx]["true_label"] = [
+                real2syn.get(i, i) for i in true_label
+            ]
             labels.append([])
 
     def _transform_schema(
-            self,
-            parent: str,
-            fields: List[str],
-            child_prefix: str,
-            prompt: str = None,
-            examples: List[Tuple[str, str]] = None,
-            label_descriptions: Dict[str, str] = None,
-            example_mode: str = "both"
+        self,
+        parent: str,
+        fields: List[str],
+        child_prefix: str,
+        prompt: str = None,
+        examples: List[Tuple[str, str]] = None,
+        label_descriptions: Dict[str, str] = None,
+        example_mode: str = "both",
     ) -> List[str]:
         """Transform schema into token sequence."""
         prompt_str = parent
@@ -802,7 +850,11 @@ class SchemaTransformer:
             prompt_str = f"{parent}: {prompt}"
 
         if example_mode in ["descriptions", "both"] and label_descriptions:
-            descs = [(l, d) for l, d in label_descriptions.items() if l in fields]
+            descs = [
+                (label, desc)
+                for label, desc in label_descriptions.items()
+                if label in fields
+            ]
             if self.is_training:
                 random.shuffle(descs)
             for label, desc in descs:
@@ -813,30 +865,26 @@ class SchemaTransformer:
                 random.shuffle(examples)
             for inp, out in examples:
                 if out in fields:
-                    out_str = out if isinstance(out, str) else ', '.join(out)
-                    prompt_str += f" {self.EXAMPLE_TOKEN} {inp} {self.OUTPUT_TOKEN} {out_str}"
+                    out_str = out if isinstance(out, str) else ", ".join(out)
+                    prompt_str += (
+                        f" {self.EXAMPLE_TOKEN} {inp} {self.OUTPUT_TOKEN} {out_str}"
+                    )
 
         tokens = ["(", self.P_TOKEN, prompt_str, "("]
-        for field in fields:
-            tokens.extend([child_prefix, field])
+        for field_name in fields:
+            tokens.extend([child_prefix, field_name])
         tokens.extend([")", ")"])
 
         return tokens
 
     def _build_outputs(
-            self,
-            processed: Dict,
-            schema: Dict,
-            text_tokens: List[str],
-            len_prefix: int
+        self, processed: Dict, schema: Dict, text_tokens: List[str], len_prefix: int
     ) -> List[Dict]:
         """Build output labels for each schema."""
         results = []
 
         for schema_tokens, task_type, struct_label in zip(
-                processed["schemas"],
-                processed["task_types"],
-                processed["structure_labels"]
+            processed["schemas"], processed["task_types"], processed["structure_labels"]
         ):
             if task_type != "classifications":
                 count, spans = struct_label
@@ -851,8 +899,9 @@ class SchemaTransformer:
                                 if str(sub).startswith("[selection]"):
                                     # Use case-insensitive matching for choice fields
                                     pos = self._find_sublist(
-                                        [str(sub)[11:]], text_tokens[:len_prefix], 
-                                        case_insensitive=True
+                                        [str(sub)[11:]],
+                                        text_tokens[:len_prefix],
+                                        case_insensitive=True,
                                     )
                                 else:
                                     pos = self._find_sublist(
@@ -864,8 +913,9 @@ class SchemaTransformer:
                             if str(field).startswith("[selection]"):
                                 # Use case-insensitive matching for choice fields
                                 pos = self._find_sublist(
-                                    [str(field)[11:]], text_tokens[:len_prefix],
-                                    case_insensitive=True
+                                    [str(field)[11:]],
+                                    text_tokens[:len_prefix],
+                                    case_insensitive=True,
                                 )
                             else:
                                 pos = self._find_sublist(
@@ -874,36 +924,44 @@ class SchemaTransformer:
                             positions.append(pos)
                     transformed.append(positions)
 
-                results.append({
-                    "task_type": task_type,
-                    "schema_tokens": schema_tokens,
-                    "output": [count, transformed]
-                })
+                results.append(
+                    {
+                        "task_type": task_type,
+                        "schema_tokens": schema_tokens,
+                        "output": [count, transformed],
+                    }
+                )
             else:
                 cls_item = next(
-                    (c for c in schema["classifications"] if schema_tokens[2].startswith(c["task"])),
-                    None
+                    (
+                        c
+                        for c in schema["classifications"]
+                        if schema_tokens[2].startswith(c["task"])
+                    ),
+                    None,
                 )
                 if cls_item is None:
                     raise ValueError(f"Missing classification for: {schema_tokens[2]}")
 
-                bool_labels = [1 if l in cls_item["true_label"] else 0 for l in cls_item["labels"]]
-                results.append({
-                    "task_type": task_type,
-                    "schema_tokens": schema_tokens,
-                    "output": bool_labels
-                })
+                bool_labels = [
+                    1 if label in cls_item["true_label"] else 0
+                    for label in cls_item["labels"]
+                ]
+                results.append(
+                    {
+                        "task_type": task_type,
+                        "schema_tokens": schema_tokens,
+                        "output": bool_labels,
+                    }
+                )
 
         return results
 
     def _find_sublist(
-            self, 
-            sub: List[str], 
-            lst: List[str], 
-            case_insensitive: bool = False
+        self, sub: List[str], lst: List[str], case_insensitive: bool = False
     ) -> List[Tuple[int, int]]:
         """Find all occurrences of sublist in list.
-        
+
         Args:
             sub: Sublist to search for
             lst: List to search in
@@ -913,19 +971,19 @@ class SchemaTransformer:
             return [(-1, -1)]
 
         sub_len = len(sub)
-        
+
         if case_insensitive:
             sub_lower = [s.lower() for s in sub]
             matches = [
                 (i, i + sub_len - 1)
                 for i in range(len(lst) - sub_len + 1)
-                if [t.lower() for t in lst[i:i + sub_len]] == sub_lower
+                if [t.lower() for t in lst[i : i + sub_len]] == sub_lower
             ]
         else:
             matches = [
                 (i, i + sub_len - 1)
                 for i in range(len(lst) - sub_len + 1)
-                if lst[i:i + sub_len] == sub
+                if lst[i : i + sub_len] == sub
             ]
         return matches or [(-1, -1)]
 
@@ -938,9 +996,7 @@ class SchemaTransformer:
     # =========================================================================
 
     def _format_input_with_mapping(
-            self,
-            schema_tokens_list: List[List[str]],
-            text_tokens: List[str]
+        self, schema_tokens_list: List[List[str]], text_tokens: List[str]
     ) -> Dict[str, Any]:
         """Format input and create token mappings."""
         # Build combined tokens
@@ -989,7 +1045,7 @@ class SchemaTransformer:
         return {
             "input_ids": input_ids,
             "mapped_indices": mappings,
-            "subword_list": subwords
+            "subword_list": subwords,
         }
 
     # =========================================================================
@@ -997,10 +1053,10 @@ class SchemaTransformer:
     # =========================================================================
 
     def extract_embeddings_from_batch(
-            self,
-            token_embeddings: torch.Tensor,
-            input_ids: torch.Tensor,
-            batch: PreprocessedBatch
+        self,
+        token_embeddings: torch.Tensor,
+        input_ids: torch.Tensor,
+        batch: PreprocessedBatch,
     ) -> Tuple[List[torch.Tensor], List[List[torch.Tensor]]]:
         """
         Extract token and schema embeddings from encoded batch.
@@ -1051,7 +1107,9 @@ class SchemaTransformer:
                 word_embs.append(self._aggregate(bucket))
 
             all_token_embs.append(
-                torch.stack(word_embs) if word_embs else torch.empty(0, embs.shape[-1], device=embs.device)
+                torch.stack(word_embs)
+                if word_embs
+                else torch.empty(0, embs.shape[-1], device=embs.device)
             )
             all_schema_embs.append(schema_embs)
 

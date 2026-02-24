@@ -432,13 +432,13 @@ from gliner2 import GLiNER2, GLiNER2APIError, AuthenticationError, ValidationErr
 try:
     extractor = GLiNER2.from_api()
     results = extractor.extract_entities(text, entity_types)
-    
+
 except AuthenticationError:
     print("Invalid API key. Check your PIONEER_API_KEY.")
-    
+
 except ValidationError as e:
     print(f"Invalid request: {e}")
-    
+
 except GLiNER2APIError as e:
     print(f"API error: {e}")
 ```
@@ -511,4 +511,3 @@ The API currently does not support:
 3. **Use batch processing** - More efficient than individual calls
 4. **Set appropriate timeouts** - Increase for large texts
 5. **Cache results** - Avoid redundant API calls for same content
-

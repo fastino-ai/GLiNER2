@@ -19,6 +19,12 @@ maintainers = [
 
 dependencies = [
     "gliner",
+    "requests"
 ]
 
 dynamic = ["version"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
