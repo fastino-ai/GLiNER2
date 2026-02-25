@@ -467,6 +467,20 @@ class GLiNER2(Extractor):
             batch
         )
 
+        # Batch span rep for all samples that need it
+        span_samples = []
+        for i in range(len(batch)):
+            has_span = any(t != "classifications" for t in batch.task_types[i])
+            if has_span and all_token_embs[i].numel() > 0:
+                span_samples.append(i)
+
+        all_span_info = [None] * len(batch)
+        if span_samples:
+            span_embs = [all_token_embs[i] for i in span_samples]
+            span_results = self.compute_span_rep_batched(span_embs)
+            for idx, si in zip(span_samples, span_results):
+                all_span_info[idx] = si
+
         results = []
 
         for i in range(len(batch)):
@@ -484,7 +498,8 @@ class GLiNER2(Extractor):
                     threshold=threshold,
                     metadata=metadata_list[i],
                     include_confidence=include_confidence,
-                    include_spans=include_spans
+                    include_spans=include_spans,
+                    span_info=all_span_info[i]
                 )
                 results.append(sample_result)
             except Exception as e:
@@ -507,16 +522,17 @@ class GLiNER2(Extractor):
         threshold: float,
         metadata: Dict,
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
+        span_info: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """Extract from single sample."""
         results = {}
 
-        # Compute span representations if needed
-        has_span_task = any(t != "classifications" for t in task_types)
-        span_info = None
-        if has_span_task and token_embs.numel() > 0:
-            span_info = self.compute_span_rep(token_embs)
+        # Compute span representations if needed and not pre-computed
+        if span_info is None:
+            has_span_task = any(t != "classifications" for t in task_types)
+            if has_span_task and token_embs.numel() > 0:
+                span_info = self.compute_span_rep(token_embs)
 
         # Build classification field map
         cls_fields = {}
