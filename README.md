@@ -980,7 +980,7 @@ config = TrainingConfig(
 
 # Train
 trainer = GLiNER2Trainer(model, config)
-trainer.train(train_data=train_data, val_data=val_data)
+trainer.train(train_data=train_data, eval_data=val_data)
 
 # Load best model
 model = GLiNER2.from_pretrained("./ner_model/best")
