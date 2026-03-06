@@ -22,4 +22,10 @@ dependencies = [
     "pydantic>=2.0.0",
 ]
 
+[project.optional-dependencies]
+api = [
+    "requests>=2.25.0",
+    "urllib3>=1.26.0",
+]
+
 dynamic = ["version"]
