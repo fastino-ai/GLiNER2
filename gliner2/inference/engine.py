@@ -313,6 +313,185 @@ class Schema:
             self._active_builder = None
         return self.schema
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Schema':
+        """Create a Schema from a dictionary.
+
+        Args:
+            data: Dictionary with optional keys: entities, structures, 
+                  classifications, relations
+
+        Returns:
+            Schema: Constructed schema instance
+
+        Raises:
+            ValidationError: If the input data is invalid
+
+        Example:
+            >>> schema_dict = {
+            ...     "entities": ["company", "person"],
+            ...     "structures": {
+            ...         "product_info": {
+            ...             "fields": [
+            ...                 {"name": "company", "dtype": "str"},
+            ...                 {"name": "product"}
+            ...             ]
+            ...         }
+            ...     },
+            ...     "classifications": [
+            ...         {"task": "sentiment", "labels": ["positive", "negative"]}
+            ...     ],
+            ...     "relations": ["works_for", "founded_by"]
+            ... }
+            >>> schema = Schema.from_dict(schema_dict)
+        """
+        from gliner2.inference.schema_model import SchemaInput
+
+        # Validate input
+        validated = SchemaInput(**data)
+
+        # Build schema using builder API
+        schema = cls()
+
+        # Add entities
+        if validated.entities is not None:
+            schema.entities(validated.entities)
+
+        # Add structures
+        if validated.structures is not None:
+            for struct_name, struct_input in validated.structures.items():
+                builder = schema.structure(struct_name)
+                for field_input in struct_input.fields:
+                    builder.field(
+                        name=field_input.name,
+                        dtype=field_input.dtype,
+                        choices=field_input.choices,
+                        description=field_input.description
+                    )
+                # Auto-finish the builder
+                builder._auto_finish()
+
+        # Add classifications
+        if validated.classifications is not None:
+            for cls_input in validated.classifications:
+                schema.classification(
+                    task=cls_input.task,
+                    labels=cls_input.labels,
+                    multi_label=cls_input.multi_label
+                )
+
+        # Add relations
+        if validated.relations is not None:
+            schema.relations(validated.relations)
+
+        return schema
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'Schema':
+        """Create a Schema from a JSON string.
+
+        Args:
+            json_str: JSON string with schema definition
+
+        Returns:
+            Schema: Constructed schema instance
+
+        Raises:
+            ValidationError: If the input data is invalid
+            json.JSONDecodeError: If the JSON is malformed
+
+        Example:
+            >>> schema_json = '''
+            ... {
+            ...     "entities": ["company", "person"],
+            ...     "classifications": [
+            ...         {"task": "sentiment", "labels": ["positive", "negative"]}
+            ...     ]
+            ... }
+            ... '''
+            >>> schema = Schema.from_json(schema_json)
+        """
+        data = json.loads(json_str)
+        return cls.from_dict(data)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert schema to user-friendly dictionary format.
+
+        Returns:
+            Dict: Schema in dictionary format compatible with from_dict()
+
+        Example:
+            >>> schema = Schema()
+            >>> schema.entities(["company", "person"])
+            >>> schema_dict = schema.to_dict()
+            >>> # schema_dict can be used with Schema.from_dict()
+        """
+        result = {}
+
+        # Export entities
+        if self.schema["entities"]:
+            # Check if we have descriptions
+            if self.schema["entity_descriptions"]:
+                result["entities"] = dict(self.schema["entity_descriptions"])
+            else:
+                result["entities"] = list(self.schema["entities"].keys())
+
+        # Export structures
+        if self.schema["json_structures"]:
+            result["structures"] = {}
+            for struct_dict in self.schema["json_structures"]:
+                for struct_name, struct_fields in struct_dict.items():
+                    fields = []
+                    field_order = self._field_orders.get(struct_name, [])
+
+                    for field_name in field_order:
+                        if field_name not in struct_fields:
+                            continue
+
+                        field_key = f"{struct_name}.{field_name}"
+                        metadata = self._field_metadata.get(field_key, {})
+
+                        field_def = {"name": field_name}
+
+                        # Add dtype if not default
+                        dtype = metadata.get("dtype", "list")
+                        if dtype != "list":
+                            field_def["dtype"] = dtype
+
+                        # Add choices if present
+                        choices = metadata.get("choices")
+                        if choices:
+                            field_def["choices"] = choices
+
+                        # Add description if present
+                        desc = self.schema.get("json_descriptions", {}).get(struct_name, {}).get(field_name)
+                        if desc:
+                            field_def["description"] = desc
+
+                        fields.append(field_def)
+
+                    result["structures"][struct_name] = {"fields": fields}
+
+        # Export classifications
+        if self.schema["classifications"]:
+            result["classifications"] = []
+            for cls_config in self.schema["classifications"]:
+                cls_def = {
+                    "task": cls_config["task"],
+                    "labels": cls_config["labels"]
+                }
+                if cls_config.get("multi_label", False):
+                    cls_def["multi_label"] = True
+                result["classifications"].append(cls_def)
+
+        # Export relations
+        if self.schema["relations"]:
+            result["relations"] = self._relation_order if self._relation_order else [
+                list(rel_dict.keys())[0] for rel_dict in self.schema["relations"]
+            ]
+
+        return result
+
 
 # =============================================================================
 # Main GLiNER2 Class
