@@ -60,8 +60,8 @@ schema = (extractor.create_schema()
 )
 
 text = """
-Dr. Sarah Johnson confirmed the appointment with John Smith for 
-March 15th at 2:30 PM. This will be a follow-up consultation 
+Dr. Sarah Johnson confirmed the appointment with John Smith for
+March 15th at 2:30 PM. This will be a follow-up consultation
 regarding his previous visit on February 1st.
 """
 results = extractor.extract(text, schema)
@@ -71,14 +71,14 @@ results = extractor.extract(text, schema)
 
 ```python
 schema = (extractor.create_schema()
-    .classification("email_type", 
+    .classification("email_type",
         ["order_confirmation", "shipping_update", "promotional", "support"])
     .classification("priority", ["urgent", "normal", "low"])
     .structure("order_info")
         .field("order_number", dtype="str")
         .field("items")
         .field("total", dtype="str")
-        .field("status", dtype="str", 
+        .field("status", dtype="str",
                choices=["pending", "processing", "shipped", "delivered"])
 )
 ```
@@ -91,11 +91,11 @@ schema = (extractor.create_schema()
 # Comprehensive invoice extraction
 invoice_schema = (extractor.create_schema()
     # Document classification
-    .classification("document_type", 
+    .classification("document_type",
         ["invoice", "credit_note", "purchase_order", "receipt"])
-    .classification("payment_status", 
+    .classification("payment_status",
         ["paid", "unpaid", "partial", "overdue"])
-    
+
     # Key entities
     .entities({
         "company": "Company names (buyer or seller)",
@@ -103,7 +103,7 @@ invoice_schema = (extractor.create_schema()
         "date": "Important dates",
         "amount": "Monetary amounts"
     })
-    
+
     # Structured information
     .structure("invoice_header")
         .field("invoice_number", dtype="str")
@@ -111,16 +111,16 @@ invoice_schema = (extractor.create_schema()
         .field("due_date", dtype="str")
         .field("vendor_name", dtype="str")
         .field("customer_name", dtype="str")
-    
+
     .structure("line_item")
         .field("description", dtype="str")
         .field("quantity")
         .field("unit_price")
         .field("amount")
         .field("tax_rate", dtype="str", choices=["0%", "5%", "10%", "20%"])
-    
+
     .structure("payment_info")
-        .field("method", dtype="str", 
+        .field("method", dtype="str",
                choices=["bank_transfer", "credit_card", "check", "cash"])
         .field("terms", description="Payment terms like NET30")
         .field("bank_details", dtype="list")
@@ -139,7 +139,7 @@ feedback_schema = (extractor.create_schema()
         "suggestion": "Customer providing improvement ideas",
         "question": "Customer asking for information"
     }, multi_label=True)
-    
+
     # Extract mentioned entities
     .entities({
         "product": "Products or services mentioned",
@@ -147,13 +147,13 @@ feedback_schema = (extractor.create_schema()
         "competitor": "Competing products mentioned",
         "price_mention": "Price points or cost references"
     })
-    
+
     # Structured feedback components
     .structure("issue")
         .field("problem", dtype="str")
         .field("severity", dtype="str", choices=["critical", "major", "minor"])
         .field("affected_area", dtype="list")
-    
+
     .structure("suggestion")
         .field("improvement", dtype="str")
         .field("benefit", description="Expected benefit of the suggestion")
@@ -165,11 +165,11 @@ feedback_schema = (extractor.create_schema()
 ```python
 news_schema = (extractor.create_schema()
     # Article metadata
-    .classification("category", 
+    .classification("category",
         ["politics", "business", "technology", "sports", "entertainment"])
     .classification("bias", ["left", "center", "right", "neutral"])
     .classification("factuality", ["fact", "opinion", "analysis", "speculation"])
-    
+
     # Key entities
     .entities({
         "person": "People mentioned in the article",
@@ -177,13 +177,13 @@ news_schema = (extractor.create_schema()
         "location": "Places, cities, or countries",
         "event": "Named events or incidents"
     })
-    
+
     # Structured content
     .structure("quote")
         .field("speaker", dtype="str")
         .field("statement", dtype="str")
         .field("context", description="Context of the quote")
-    
+
     .structure("claim")
         .field("statement", dtype="str")
         .field("source", dtype="str")
@@ -200,7 +200,7 @@ product_schema = (extractor.create_schema()
     # Listing classification
     .classification("condition", ["new", "used", "refurbished", "for_parts"])
     .classification("listing_type", ["buy_now", "auction", "best_offer"])
-    
+
     # Extract key entities
     .entities({
         "brand": "Product brand or manufacturer",
@@ -208,21 +208,21 @@ product_schema = (extractor.create_schema()
         "color": "Product colors mentioned",
         "size": "Size specifications"
     })
-    
+
     # Product details
     .structure("product")
         .field("title", dtype="str")
         .field("price", dtype="str")
         .field("features", dtype="list")
         .field("category", dtype="str")
-    
+
     # Shipping information
     .structure("shipping")
-        .field("method", dtype="list", 
+        .field("method", dtype="list",
                choices=["standard", "express", "overnight", "international"])
         .field("cost", dtype="str")
         .field("delivery_time", description="Estimated delivery timeframe")
-    
+
     # Seller information
     .structure("seller")
         .field("name", dtype="str")
@@ -236,10 +236,10 @@ product_schema = (extractor.create_schema()
 ```python
 clinical_schema = (extractor.create_schema()
     # Note classification
-    .classification("visit_type", 
+    .classification("visit_type",
         ["initial_consultation", "follow_up", "emergency", "routine_checkup"])
     .classification("urgency", ["urgent", "routine", "elective"])
-    
+
     # Medical entities
     .entities({
         "symptom": "Patient reported symptoms",
@@ -248,21 +248,21 @@ clinical_schema = (extractor.create_schema()
         "procedure": "Medical procedures or tests",
         "body_part": "Anatomical references"
     })
-    
+
     # Patient information
     .structure("patient_info")
         .field("name", dtype="str")
         .field("age", dtype="str")
         .field("gender", dtype="str", choices=["male", "female", "other"])
         .field("chief_complaint", dtype="str")
-    
+
     # Clinical findings
     .structure("vital_signs")
         .field("blood_pressure", dtype="str")
         .field("heart_rate", dtype="str")
         .field("temperature", dtype="str")
         .field("respiratory_rate", dtype="str")
-    
+
     # Treatment plan
     .structure("prescription")
         .field("medication", dtype="str")
@@ -278,11 +278,11 @@ clinical_schema = (extractor.create_schema()
 ```python
 legal_schema = (extractor.create_schema()
     # Document classification
-    .classification("document_type", 
+    .classification("document_type",
         ["contract", "memorandum", "brief", "motion", "order"])
-    .classification("jurisdiction", 
+    .classification("jurisdiction",
         ["federal", "state", "local", "international"])
-    
+
     # Legal entities
     .entities({
         "party": "Parties involved (plaintiff, defendant, etc.)",
@@ -291,15 +291,15 @@ legal_schema = (extractor.create_schema()
         "statute": "Laws or regulations cited",
         "case_citation": "Referenced legal cases"
     })
-    
+
     # Contract terms
     .structure("contract_term")
-        .field("clause_type", dtype="str", 
+        .field("clause_type", dtype="str",
                choices=["payment", "delivery", "warranty", "liability", "termination"])
         .field("obligation", dtype="str")
         .field("party_responsible", dtype="str")
         .field("deadline")
-    
+
     # Legal claims
     .structure("claim")
         .field("type", dtype="str")

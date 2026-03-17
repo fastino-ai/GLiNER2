@@ -98,14 +98,14 @@ from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
 config = TrainingConfig(
     output_dir="./legal_adapter",
     experiment_name="legal_domain",
-    
+
     # Training parameters
     num_epochs=10,
     batch_size=8,
     gradient_accumulation_steps=2,
     encoder_lr=1e-5,
     task_lr=5e-4,
-    
+
     # LoRA settings
     use_lora=True,                              # Enable LoRA
     lora_r=8,                                   # Rank (4, 8, 16, 32)
@@ -113,7 +113,7 @@ config = TrainingConfig(
     lora_dropout=0.0,                          # Dropout for LoRA layers
     lora_target_modules=["encoder"],           # Apply to all encoder layers (query, key, value, dense)
     save_adapter_only=True,                    # Save only adapter (not full model)
-    
+
     # Optimization
     eval_strategy="epoch",  # Evaluates and saves at end of each epoch
     eval_steps=500,  # Used when eval_strategy="steps"
@@ -237,20 +237,20 @@ def train_domain_adapter(
     output_dir: str = "./adapters"
 ):
     """Train a LoRA adapter for a specific domain."""
-    
+
     adapter_path = f"{output_dir}/{domain_name}_adapter"
-    
+
     config = TrainingConfig(
         output_dir=adapter_path,
         experiment_name=f"{domain_name}_domain",
-        
+
         # Training
         num_epochs=10,
         batch_size=8,
         gradient_accumulation_steps=2,
         encoder_lr=1e-5,
         task_lr=5e-4,
-        
+
         # LoRA
         use_lora=True,
         lora_r=8,
@@ -258,29 +258,29 @@ def train_domain_adapter(
         lora_dropout=0.0,
         lora_target_modules=["encoder"],  # All encoder layers
         save_adapter_only=True,
-        
+
         # Logging & Checkpointing
         eval_strategy="no",  # Set to "epoch" or "steps" if you have validation set
         eval_steps=500,  # Used when eval_strategy="steps"
         logging_steps=50,
         fp16=True,
     )
-    
+
     # Load base model
     print(f"\n{'='*60}")
     print(f"Training {domain_name.upper()} adapter")
     print(f"{'='*60}")
-    
+
     model = GLiNER2.from_pretrained(base_model_name)
     trainer = GLiNER2Trainer(model=model, config=config)
-    
+
     # Train
     results = trainer.train(train_data=examples)
-    
+
     print(f"\n✅ {domain_name.capitalize()} adapter trained!")
     print(f"📁 Saved to: {adapter_path}/final/")
     print(f"⏱️  Training time: {results['total_time_seconds']:.2f}s")
-    
+
     return f"{adapter_path}/final"
 
 # ============================================================================
@@ -289,20 +289,20 @@ def train_domain_adapter(
 
 if __name__ == "__main__":
     BASE_MODEL = "fastino/gliner2-base-v1"
-    
+
     # Train adapters for each domain
     legal_adapter_path = train_domain_adapter(
         BASE_MODEL, legal_examples, "legal"
     )
-    
+
     medical_adapter_path = train_domain_adapter(
         BASE_MODEL, medical_examples, "medical"
     )
-    
+
     support_adapter_path = train_domain_adapter(
         BASE_MODEL, support_examples, "support"
     )
-    
+
     print("\n" + "="*60)
     print("🎉 All adapters trained successfully!")
     print("="*60)
@@ -369,7 +369,7 @@ print(f"  {base_result}")
 **Output:**
 ```
 📋 Legal Analysis:
-  {'entities': [{'text': 'Google LLC', 'label': 'company', ...}, 
+  {'entities': [{'text': 'Google LLC', 'label': 'company', ...},
                 {'text': 'Oracle Corporation', 'label': 'company', ...}]}
 
 🏥 Medical Analysis:
@@ -389,31 +389,31 @@ print(f"  {base_result}")
 def process_documents_by_domain(model, documents_by_domain, adapters):
     """
     Process multiple documents across different domains efficiently.
-    
+
     Args:
         model: Base GLiNER2 model
         documents_by_domain: Dict[domain_name, List[document_text]]
         adapters: Dict[domain_name, adapter_path]
-    
+
     Returns:
         Dict[domain_name, List[results]]
     """
     results = {}
-    
+
     for domain, documents in documents_by_domain.items():
         print(f"Processing {domain} domain ({len(documents)} documents)...")
-        
+
         # Load domain-specific adapter
         model.load_adapter(adapters[domain])
-        
+
         # Process all documents for this domain
         domain_results = []
         for doc in documents:
             result = model.extract_entities(doc, get_entity_types(domain))
             domain_results.append(result)
-        
+
         results[domain] = domain_results
-    
+
     return results
 
 def get_entity_types(domain):
@@ -465,7 +465,7 @@ for domain, domain_results in results.items():
 ```python
 class MultiTenantEntityExtractor:
     """Entity extraction service for multi-tenant platform."""
-    
+
     def __init__(self, base_model_name: str, tenant_adapters: dict):
         """
         Args:
@@ -475,7 +475,7 @@ class MultiTenantEntityExtractor:
         self.model = GLiNER2.from_pretrained(base_model_name)
         self.tenant_adapters = tenant_adapters
         self.current_tenant = None
-    
+
     def extract_for_tenant(self, tenant_id: str, text: str, entity_types: list):
         """Extract entities for specific tenant."""
         # Load tenant-specific adapter if needed
@@ -486,7 +486,7 @@ class MultiTenantEntityExtractor:
             else:
                 self.model.unload_adapter()  # Use base model
             self.current_tenant = tenant_id
-        
+
         return self.model.extract_entities(text, entity_types)
 
 # Setup
@@ -519,7 +519,7 @@ medical_result = extractor.extract_for_tenant(
 def classify_and_extract(document: str, model: GLiNER2, adapters: dict):
     """
     Classify document type and extract relevant entities.
-    
+
     1. Classify document type using base model
     2. Load appropriate domain adapter
     3. Extract domain-specific entities
@@ -529,14 +529,14 @@ def classify_and_extract(document: str, model: GLiNER2, adapters: dict):
         document,
         ["legal_document", "medical_record", "support_ticket", "financial_report"]
     )
-    
+
     # Determine document type
     if doc_type_result['entities']:
         doc_type = doc_type_result['entities'][0]['label']
         doc_type = doc_type.replace("_document", "").replace("_record", "").replace("_ticket", "").replace("_report", "")
     else:
         doc_type = "general"
-    
+
     # Step 2: Load appropriate adapter
     adapter_mapping = {
         "legal": adapters.get("legal"),
@@ -544,10 +544,10 @@ def classify_and_extract(document: str, model: GLiNER2, adapters: dict):
         "support": adapters.get("support"),
         "financial": adapters.get("financial"),
     }
-    
+
     if doc_type in adapter_mapping and adapter_mapping[doc_type]:
         model.load_adapter(adapter_mapping[doc_type])
-    
+
     # Step 3: Extract domain-specific entities
     entity_types = {
         "legal": ["company", "person", "law", "legal_action"],
@@ -555,12 +555,12 @@ def classify_and_extract(document: str, model: GLiNER2, adapters: dict):
         "support": ["customer", "order_id", "product", "issue", "status"],
         "financial": ["company", "amount", "date", "stock_symbol"],
     }
-    
+
     entities = model.extract_entities(
         document,
         entity_types.get(doc_type, ["entity"])
     )
-    
+
     return {
         "document_type": doc_type,
         "entities": entities['entities']
@@ -589,7 +589,7 @@ import random
 
 class AdapterABTester:
     """A/B test different adapter versions."""
-    
+
     def __init__(self, base_model_name: str, adapter_variants: dict):
         """
         Args:
@@ -598,48 +598,48 @@ class AdapterABTester:
         self.model = GLiNER2.from_pretrained(base_model_name)
         self.adapter_variants = adapter_variants
         self.results = {variant: [] for variant in adapter_variants}
-    
+
     def test_sample(self, text: str, entity_types: list, true_entities: list):
         """Test a sample with all adapter variants."""
         sample_results = {}
-        
+
         for variant, adapter_path in self.adapter_variants.items():
             # Load variant
             self.model.load_adapter(adapter_path)
-            
+
             # Get predictions
             pred = self.model.extract_entities(text, entity_types)
-            
+
             # Compute metrics
             f1 = self.compute_f1(pred['entities'], true_entities)
-            
+
             sample_results[variant] = {
                 "predictions": pred['entities'],
                 "f1_score": f1
             }
-            
+
             self.results[variant].append(f1)
-        
+
         return sample_results
-    
+
     def compute_f1(self, predicted, ground_truth):
         """Simple F1 computation (simplified for demo)."""
         pred_set = {(e['text'], e['label']) for e in predicted}
         true_set = {(e['text'], e['label']) for e in ground_truth}
-        
+
         if not pred_set and not true_set:
             return 1.0
         if not pred_set or not true_set:
             return 0.0
-        
+
         tp = len(pred_set & true_set)
         precision = tp / len(pred_set) if pred_set else 0
         recall = tp / len(true_set) if true_set else 0
-        
+
         if precision + recall == 0:
             return 0.0
         return 2 * precision * recall / (precision + recall)
-    
+
     def get_summary(self):
         """Get A/B test summary."""
         summary = {}
@@ -808,27 +808,27 @@ project/
 def evaluate_adapter(model, adapter_path, test_data):
     """Evaluate adapter performance on test data."""
     model.load_adapter(adapter_path)
-    
+
     results = {
         "total": 0,
         "correct": 0,
         "precision_sum": 0,
         "recall_sum": 0,
     }
-    
+
     for sample in test_data:
         pred = model.extract_entities(sample["text"], sample["entity_types"])
-        
+
         # Compute metrics
         metrics = compute_metrics(pred['entities'], sample["true_entities"])
         results["total"] += 1
         results["precision_sum"] += metrics["precision"]
         results["recall_sum"] += metrics["recall"]
-    
+
     avg_precision = results["precision_sum"] / results["total"]
     avg_recall = results["recall_sum"] / results["total"]
     f1 = 2 * avg_precision * avg_recall / (avg_precision + avg_recall)
-    
+
     return {
         "precision": avg_precision,
         "recall": avg_recall,
@@ -865,13 +865,13 @@ config = TrainingConfig(
     # Reduce batch size
     batch_size=4,  # Instead of 8
     gradient_accumulation_steps=4,  # Maintain effective batch size
-    
+
     # Use smaller LoRA rank
     lora_r=4,  # Instead of 8
-    
+
     # Enable mixed precision
     fp16=True,
-    
+
     # Target only attention layers (fewer parameters)
     lora_target_modules=["encoder.query", "encoder.key", "encoder.value"],
 )
@@ -924,11 +924,11 @@ for domain, path in adapter_paths.items():
 
 ### Key Takeaways
 
-✅ **LoRA adapters** enable efficient multi-domain inference  
-✅ **Training** is 2-3x faster than full fine-tuning  
-✅ **Storage** savings of 65-95% compared to multiple full models  
-✅ **Swapping** adapters takes < 1 second  
-✅ **Domain specialization** improves accuracy on specific tasks  
+✅ **LoRA adapters** enable efficient multi-domain inference
+✅ **Training** is 2-3x faster than full fine-tuning
+✅ **Storage** savings of 65-95% compared to multiple full models
+✅ **Swapping** adapters takes < 1 second
+✅ **Domain specialization** improves accuracy on specific tasks
 
 ### Quick Reference
 
@@ -970,4 +970,3 @@ For more information:
 - Implementation: `gliner2/training/lora.py`
 - Tests: `tests/test_lora_adapters.py`
 - Verification Guide: `LORA_VERIFICATION_TESTS.md`
-

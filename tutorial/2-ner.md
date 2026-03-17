@@ -64,7 +64,7 @@ schema = extractor.create_schema().entities({
 })
 
 medical_text = """
-Patient was prescribed Metformin 500mg twice daily for Type 2 Diabetes. 
+Patient was prescribed Metformin 500mg twice daily for Type 2 Diabetes.
 She reported fatigue and occasional dizziness. Liver function tests ordered.
 """
 
@@ -298,7 +298,7 @@ legal_schema = extractor.create_schema().entities({
 })
 
 legal_text = """
-In the case of Smith v. Jones, Judge Sarah Williams of the Superior Court 
+In the case of Smith v. Jones, Judge Sarah Williams of the Superior Court
 ruled that the defendant violated Section 15.2 of the Consumer Protection Act.
 The plaintiff was represented by Miller & Associates.
 """
@@ -318,8 +318,8 @@ finance_schema = extractor.create_schema().entities({
 })
 
 finance_text = """
-AAPL rose 3.5% to $185.50 after beating earnings expectations. 
-The company's P/E ratio of 28.5 attracted Goldman Sachs analysts. 
+AAPL rose 3.5% to $185.50 after beating earnings expectations.
+The company's P/E ratio of 28.5 attracted Goldman Sachs analysts.
 The NASDAQ composite gained 1.2% for the day.
 """
 results = extractor.extract(finance_text, finance_schema)
@@ -338,7 +338,7 @@ science_schema = extractor.create_schema().entities({
 })
 
 science_text = """
-Researchers at MIT discovered that the BRCA1 gene mutation increases 
+Researchers at MIT discovered that the BRCA1 gene mutation increases
 cancer risk by 70%. The study used CRISPR-Cas9 to modify DNA sequences
 in Mus musculus specimens, measuring tumor growth in millimeters.
 """

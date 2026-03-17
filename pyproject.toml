@@ -19,7 +19,13 @@ maintainers = [
 
 dependencies = [
     "gliner",
+    "requests"
     "pydantic>=2.0.0",
 ]
 
 dynamic = ["version"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]

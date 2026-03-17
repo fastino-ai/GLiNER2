@@ -27,14 +27,21 @@ Example:
 from __future__ import annotations
 
 import re
-import hashlib
-import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union, Tuple, TYPE_CHECKING, Pattern, Literal
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Union,
+    Tuple,
+    TYPE_CHECKING,
+    Pattern,
+    Literal,
+)
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from gliner2.model import Extractor
@@ -49,9 +56,11 @@ if TYPE_CHECKING:
 # Validators
 # =============================================================================
 
+
 @dataclass
 class RegexValidator:
     """Regex-based span filter for post-processing."""
+
     pattern: str | Pattern[str]
     mode: Literal["full", "partial"] = "full"
     exclude: bool = False
@@ -63,7 +72,8 @@ class RegexValidator:
             raise ValueError(f"mode must be 'full' or 'partial', got {self.mode!r}")
         try:
             compiled = (
-                self.pattern if isinstance(self.pattern, re.Pattern)
+                self.pattern
+                if isinstance(self.pattern, re.Pattern)
                 else re.compile(self.pattern, self.flags)
             )
         except re.error as err:
@@ -74,7 +84,9 @@ class RegexValidator:
         return self.validate(text)
 
     def validate(self, text: str) -> bool:
-        matcher = self._compiled.fullmatch if self.mode == "full" else self._compiled.search
+        matcher = (
+            self._compiled.fullmatch if self.mode == "full" else self._compiled.search
+        )
         matched = matcher(text) is not None
         return not matched if self.exclude else matched
 
@@ -83,10 +95,11 @@ class RegexValidator:
 # Schema Builder
 # =============================================================================
 
+
 class StructureBuilder:
     """Builder for structured data schemas."""
 
-    def __init__(self, schema: 'Schema', parent: str):
+    def __init__(self, schema: "Schema", parent: str):
         self.schema = schema
         self.parent = parent
         self.fields = OrderedDict()
@@ -101,8 +114,8 @@ class StructureBuilder:
         choices: Optional[List[str]] = None,
         description: Optional[str] = None,
         threshold: Optional[float] = None,
-        validators: Optional[List[RegexValidator]] = None
-    ) -> 'StructureBuilder':
+        validators: Optional[List[RegexValidator]] = None,
+    ) -> "StructureBuilder":
         """Add a field to the structure."""
         self.fields[name] = {"value": "", "choices": choices} if choices else ""
         self.field_order.append(name)
@@ -110,7 +123,9 @@ class StructureBuilder:
         if description:
             self.descriptions[name] = description
 
-        self.schema._store_field_metadata(self.parent, name, dtype, threshold, choices, validators)
+        self.schema._store_field_metadata(
+            self.parent, name, dtype, threshold, choices, validators
+        )
         return self
 
     def _auto_finish(self):
@@ -142,7 +157,7 @@ class Schema:
             "entities": OrderedDict(),
             "relations": [],
             "json_descriptions": {},
-            "entity_descriptions": OrderedDict()
+            "entity_descriptions": OrderedDict(),
         }
         self._field_metadata = {}
         self._entity_metadata = {}
@@ -152,12 +167,16 @@ class Schema:
         self._relation_order = []
         self._active_builder = None
 
-    def _store_field_metadata(self, parent, field, dtype, threshold, choices, validators=None):
+    def _store_field_metadata(
+        self, parent, field, dtype, threshold, choices, validators=None
+    ):
         if threshold is not None and not 0 <= threshold <= 1:
             raise ValueError(f"Threshold must be 0-1, got {threshold}")
         self._field_metadata[f"{parent}.{field}"] = {
-            "dtype": dtype, "threshold": threshold, "choices": choices,
-            "validators": validators or []
+            "dtype": dtype,
+            "threshold": threshold,
+            "choices": choices,
+            "validators": validators or [],
         }
 
     def _store_entity_metadata(self, entity, dtype, threshold):
@@ -181,8 +200,8 @@ class Schema:
         labels: Union[List[str], Dict[str, str]],
         multi_label: bool = False,
         cls_threshold: float = 0.5,
-        **kwargs
-    ) -> 'Schema':
+        **kwargs,
+    ) -> "Schema":
         """Add classification task."""
         if self._active_builder:
             self._active_builder._auto_finish()
@@ -192,9 +211,12 @@ class Schema:
         label_descs = labels if isinstance(labels, dict) else None
 
         config = {
-            "task": task, "labels": label_names,
-            "multi_label": multi_label, "cls_threshold": cls_threshold,
-            "true_label": ["N/A"], **kwargs
+            "task": task,
+            "labels": label_names,
+            "multi_label": multi_label,
+            "cls_threshold": cls_threshold,
+            "true_label": ["N/A"],
+            **kwargs,
         }
         if label_descs:
             config["label_descriptions"] = label_descs
@@ -206,8 +228,8 @@ class Schema:
         self,
         entity_types: Union[str, List[str], Dict[str, Union[str, Dict]]],
         dtype: Literal["str", "list"] = "list",
-        threshold: Optional[float] = None
-    ) -> 'Schema':
+        threshold: Optional[float] = None,
+    ) -> "Schema":
         """Add entity extraction task."""
         if self._active_builder:
             self._active_builder._auto_finish()
@@ -221,9 +243,7 @@ class Schema:
                 self._entity_order.append(name)
 
             self._store_entity_metadata(
-                name,
-                config.get("dtype", dtype),
-                config.get("threshold", threshold)
+                name, config.get("dtype", dtype), config.get("threshold", threshold)
             )
 
             if "description" in config:
@@ -251,8 +271,8 @@ class Schema:
     def relations(
         self,
         relation_types: Union[str, List[str], Dict[str, Union[str, Dict]]],
-        threshold: Optional[float] = None
-    ) -> 'Schema':
+        threshold: Optional[float] = None,
+    ) -> "Schema":
         """Add relation extraction task."""
         if self._active_builder:
             self._active_builder._auto_finish()
@@ -265,7 +285,11 @@ class Schema:
         elif isinstance(relation_types, dict):
             relations = {}
             for name, config in relation_types.items():
-                relations[name] = {"description": config} if isinstance(config, str) else (config if isinstance(config, dict) else {})
+                relations[name] = (
+                    {"description": config}
+                    if isinstance(config, str)
+                    else (config if isinstance(config, dict) else {})
+                )
         else:
             raise ValueError("Invalid relation_types format")
 
@@ -473,6 +497,7 @@ class Schema:
 # Main GLiNER2 Class
 # =============================================================================
 
+
 class GLiNER2(Extractor):
     """
     GLiNER2 Information Extraction Model.
@@ -487,12 +512,22 @@ class GLiNER2(Extractor):
         self._inference_collator = None
 
     @classmethod
-    def from_api(cls, api_key: str = None, api_base_url: str = None,
-                 timeout: float = 30.0, max_retries: int = 3) -> 'GLiNER2API':
+    def from_api(
+        cls,
+        api_key: str = None,
+        api_base_url: str = None,
+        timeout: float = 30.0,
+        max_retries: int = 3,
+    ) -> "GLiNER2API":
         """Load from API instead of local model."""
         from gliner2.api_client import GLiNER2API
-        return GLiNER2API(api_key=api_key, api_base_url=api_base_url,
-                         timeout=timeout, max_retries=max_retries)
+
+        return GLiNER2API(
+            api_key=api_key,
+            api_base_url=api_base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
 
     def create_schema(self) -> Schema:
         """Create a new schema builder."""
@@ -512,7 +547,7 @@ class GLiNER2(Extractor):
         num_workers: int = 0,
         format_results: bool = True,
         include_confidence: bool = False,
-        include_spans: bool = False
+        include_spans: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Extract from multiple texts with parallel preprocessing.
@@ -539,7 +574,9 @@ class GLiNER2(Extractor):
         # Normalize schemas
         if isinstance(schemas, list):
             if len(schemas) != len(texts):
-                raise ValueError(f"Schema count ({len(schemas)}) != text count ({len(texts)})")
+                raise ValueError(
+                    f"Schema count ({len(schemas)}) != text count ({len(texts)})"
+                )
             schema_list = schemas
         else:
             schema_list = [schemas] * len(texts)
@@ -549,28 +586,35 @@ class GLiNER2(Extractor):
         metadata_list = []
 
         for schema in schema_list:
-            if hasattr(schema, 'build'):
+            if hasattr(schema, "build"):
                 schema_dict = schema.build()
                 # Extract classification task names
-                classification_tasks = [c["task"] for c in schema_dict.get("classifications", [])]
+                classification_tasks = [
+                    c["task"] for c in schema_dict.get("classifications", [])
+                ]
                 metadata = {
                     "field_metadata": schema._field_metadata,
                     "entity_metadata": schema._entity_metadata,
-                    "relation_metadata": getattr(schema, '_relation_metadata', {}),
+                    "relation_metadata": getattr(schema, "_relation_metadata", {}),
                     "field_orders": schema._field_orders,
                     "entity_order": schema._entity_order,
-                    "relation_order": getattr(schema, '_relation_order', []),
-                    "classification_tasks": classification_tasks
+                    "relation_order": getattr(schema, "_relation_order", []),
+                    "classification_tasks": classification_tasks,
                 }
             else:
                 schema_dict = schema
                 # Extract classification task names from dict schema
-                classification_tasks = [c["task"] for c in schema_dict.get("classifications", [])]
+                classification_tasks = [
+                    c["task"] for c in schema_dict.get("classifications", [])
+                ]
                 metadata = {
-                    "field_metadata": {}, "entity_metadata": {},
-                    "relation_metadata": {}, "field_orders": {},
-                    "entity_order": [], "relation_order": [],
-                    "classification_tasks": classification_tasks
+                    "field_metadata": {},
+                    "entity_metadata": {},
+                    "relation_metadata": {},
+                    "field_orders": {},
+                    "entity_order": [],
+                    "relation_order": [],
+                    "classification_tasks": classification_tasks,
                 }
 
             # Ensure classifications have true_label
@@ -585,7 +629,9 @@ class GLiNER2(Extractor):
 
         # OPT-11: Reuse cached collator instance
         if self._inference_collator is None:
-            self._inference_collator = ExtractorCollator(self.processor, is_training=False)
+            self._inference_collator = ExtractorCollator(
+                self.processor, is_training=False
+            )
         collator = self._inference_collator
 
         # OPT-12: Skip DataLoader overhead for single-batch inputs
@@ -609,8 +655,11 @@ class GLiNER2(Extractor):
         for batch in batches:
             batch = batch.to(device)
             batch_results = self._extract_from_batch(
-                batch, threshold, metadata_list[sample_idx:sample_idx + len(batch)],
-                include_confidence, include_spans
+                batch,
+                threshold,
+                metadata_list[sample_idx : sample_idx + len(batch)],
+                include_confidence,
+                include_spans,
             )
 
             if format_results:
@@ -619,7 +668,10 @@ class GLiNER2(Extractor):
                     requested_relations = meta.get("relation_order", [])
                     classification_tasks = meta.get("classification_tasks", [])
                     batch_results[i] = self.format_results(
-                        result, include_confidence, requested_relations, classification_tasks
+                        result,
+                        include_confidence,
+                        requested_relations,
+                        classification_tasks,
                     )
 
             all_results.extend(batch_results)
@@ -633,17 +685,16 @@ class GLiNER2(Extractor):
         threshold: float,
         metadata_list: List[Dict],
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ) -> List[Dict[str, Any]]:
         """Extract from preprocessed batch."""
         # Encode batch
         all_token_embs, all_schema_embs = self.processor.extract_embeddings_from_batch(
             self.encoder(
-                input_ids=batch.input_ids,
-                attention_mask=batch.attention_mask
+                input_ids=batch.input_ids, attention_mask=batch.attention_mask
             ).last_hidden_state,
             batch.input_ids,
-            batch
+            batch,
         )
 
         results = []
@@ -663,7 +714,7 @@ class GLiNER2(Extractor):
                     threshold=threshold,
                     metadata=metadata_list[i],
                     include_confidence=include_confidence,
-                    include_spans=include_spans
+                    include_spans=include_spans,
                 )
                 results.append(sample_result)
             except Exception as e:
@@ -686,7 +737,7 @@ class GLiNER2(Extractor):
         threshold: float,
         metadata: Dict,
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ) -> Dict[str, Any]:
         """Extract from single sample."""
         results = {}
@@ -708,7 +759,9 @@ class GLiNER2(Extractor):
         # OPT-3: Use start_mapping length instead of re-tokenizing text
         text_len = len(start_mapping)
 
-        for i, (schema_tokens, task_type) in enumerate(zip(schema_tokens_list, task_types)):
+        for i, (schema_tokens, task_type) in enumerate(
+            zip(schema_tokens_list, task_types)
+        ):
             if len(schema_tokens) < 4 or not schema_embs[i]:
                 continue
 
@@ -721,10 +774,22 @@ class GLiNER2(Extractor):
                 )
             else:
                 self._extract_span_result(
-                    results, schema_name, task_type, embs, span_info,
-                    schema_tokens, text_tokens, text_len, original_text,
-                    start_mapping, end_mapping, threshold, metadata,
-                    cls_fields, include_confidence, include_spans
+                    results,
+                    schema_name,
+                    task_type,
+                    embs,
+                    span_info,
+                    schema_tokens,
+                    text_tokens,
+                    text_len,
+                    original_text,
+                    start_mapping,
+                    end_mapping,
+                    threshold,
+                    metadata,
+                    cls_fields,
+                    include_confidence,
+                    include_spans,
                 )
 
         return results
@@ -735,11 +800,12 @@ class GLiNER2(Extractor):
         schema_name: str,
         schema: Dict,
         embs: torch.Tensor,
-        schema_tokens: List[str]
+        schema_tokens: List[str],
     ):
         """Extract classification result."""
         cls_config = next(
-            c for c in schema["classifications"]
+            c
+            for c in schema["classifications"]
             if schema_tokens[2].startswith(c["task"])
         )
 
@@ -760,7 +826,11 @@ class GLiNER2(Extractor):
         cls_threshold = cls_config.get("cls_threshold", 0.5)
 
         if is_multi:
-            chosen = [(labels[j], probs[j].item()) for j in range(len(labels)) if probs[j].item() >= cls_threshold]
+            chosen = [
+                (labels[j], probs[j].item())
+                for j in range(len(labels))
+                if probs[j].item() >= cls_threshold
+            ]
             if not chosen:
                 best = int(torch.argmax(probs).item())
                 chosen = [(labels[best], probs[best].item())]
@@ -786,7 +856,7 @@ class GLiNER2(Extractor):
         metadata: Dict,
         cls_fields: Dict,
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ):
         """Extract span-based results."""
         # Get field names
@@ -821,21 +891,50 @@ class GLiNER2(Extractor):
         # Extract based on type
         if schema_name == "entities":
             results[schema_name] = self._extract_entities(
-                field_names, span_scores, text_len, text_tokens,
-                original_text, start_mapping, end_mapping,
-                threshold, metadata, include_confidence, include_spans
+                field_names,
+                span_scores,
+                text_len,
+                text_tokens,
+                original_text,
+                start_mapping,
+                end_mapping,
+                threshold,
+                metadata,
+                include_confidence,
+                include_spans,
             )
         elif task_type == "relations":
             results[schema_name] = self._extract_relations(
-                schema_name, field_names, span_scores, pred_count,
-                text_len, text_tokens, original_text, start_mapping, end_mapping,
-                threshold, metadata, include_confidence, include_spans
+                schema_name,
+                field_names,
+                span_scores,
+                pred_count,
+                text_len,
+                text_tokens,
+                original_text,
+                start_mapping,
+                end_mapping,
+                threshold,
+                metadata,
+                include_confidence,
+                include_spans,
             )
         else:
             results[schema_name] = self._extract_structures(
-                schema_name, field_names, span_scores, pred_count,
-                text_len, text_tokens, original_text, start_mapping, end_mapping,
-                threshold, metadata, cls_fields, include_confidence, include_spans
+                schema_name,
+                field_names,
+                span_scores,
+                pred_count,
+                text_len,
+                text_tokens,
+                original_text,
+                start_mapping,
+                end_mapping,
+                threshold,
+                metadata,
+                cls_fields,
+                include_confidence,
+                include_spans,
             )
 
     def _extract_entities(
@@ -850,7 +949,7 @@ class GLiNER2(Extractor):
         threshold: float,
         metadata: Dict,
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ) -> List[Dict]:
         """Extract entity results."""
         scores = span_scores[0, :, -text_len:]
@@ -867,35 +966,38 @@ class GLiNER2(Extractor):
             dtype = meta.get("dtype", "list")
 
             spans = self._find_spans(
-                scores[idx], ent_threshold, text_len, text,
-                start_map, end_map
+                scores[idx], ent_threshold, text_len, text, start_map, end_map
             )
 
             if dtype == "list":
-                entity_results[name] = self._format_spans(spans, include_confidence, include_spans)
+                entity_results[name] = self._format_spans(
+                    spans, include_confidence, include_spans
+                )
             else:
                 if spans:
                     text_val, conf, char_start, char_end = spans[0]
-                    
+
                     if include_spans and include_confidence:
                         entity_results[name] = {
                             "text": text_val,
                             "confidence": conf,
                             "start": char_start,
-                            "end": char_end
+                            "end": char_end,
                         }
                     elif include_spans:
                         entity_results[name] = {
                             "text": text_val,
                             "start": char_start,
-                            "end": char_end
+                            "end": char_end,
                         }
                     elif include_confidence:
                         entity_results[name] = {"text": text_val, "confidence": conf}
                     else:
                         entity_results[name] = text_val
                 else:
-                    entity_results[name] = "" if not include_spans and not include_confidence else None
+                    entity_results[name] = (
+                        "" if not include_spans and not include_confidence else None
+                    )
 
         return [entity_results] if entity_results else []
 
@@ -913,7 +1015,7 @@ class GLiNER2(Extractor):
         threshold: float,
         metadata: Dict,
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ) -> List[Union[Tuple[str, str], Dict]]:
         """Extract relation results with optional confidence and position info."""
         instances = []
@@ -935,19 +1037,20 @@ class GLiNER2(Extractor):
                     continue
                 fidx = field_names.index(fname)
                 spans = self._find_spans(
-                    scores[fidx], rel_threshold, text_len, text,
-                    start_map, end_map
+                    scores[fidx], rel_threshold, text_len, text, start_map, end_map
                 )
-                
+
                 if spans:
                     text_val, conf, char_start, char_end = spans[0]
                     values.append(text_val)
-                    field_data.append({
-                        "text": text_val,
-                        "confidence": conf,
-                        "start": char_start,
-                        "end": char_end
-                    })
+                    field_data.append(
+                        {
+                            "text": text_val,
+                            "confidence": conf,
+                            "start": char_start,
+                            "end": char_end,
+                        }
+                    )
                 else:
                     values.append(None)
                     field_data.append(None)
@@ -955,20 +1058,35 @@ class GLiNER2(Extractor):
             if len(values) == 2 and values[0] and values[1]:
                 # Format based on flags
                 if include_spans and include_confidence:
-                    instances.append({
-                        "head": field_data[0],
-                        "tail": field_data[1]
-                    })
+                    instances.append({"head": field_data[0], "tail": field_data[1]})
                 elif include_spans:
-                    instances.append({
-                        "head": {"text": field_data[0]["text"], "start": field_data[0]["start"], "end": field_data[0]["end"]},
-                        "tail": {"text": field_data[1]["text"], "start": field_data[1]["start"], "end": field_data[1]["end"]}
-                    })
+                    instances.append(
+                        {
+                            "head": {
+                                "text": field_data[0]["text"],
+                                "start": field_data[0]["start"],
+                                "end": field_data[0]["end"],
+                            },
+                            "tail": {
+                                "text": field_data[1]["text"],
+                                "start": field_data[1]["start"],
+                                "end": field_data[1]["end"],
+                            },
+                        }
+                    )
                 elif include_confidence:
-                    instances.append({
-                        "head": {"text": field_data[0]["text"], "confidence": field_data[0]["confidence"]},
-                        "tail": {"text": field_data[1]["text"], "confidence": field_data[1]["confidence"]}
-                    })
+                    instances.append(
+                        {
+                            "head": {
+                                "text": field_data[0]["text"],
+                                "confidence": field_data[0]["confidence"],
+                            },
+                            "tail": {
+                                "text": field_data[1]["text"],
+                                "confidence": field_data[1]["confidence"],
+                            },
+                        }
+                    )
                 else:
                     # Original tuple format for backward compatibility
                     instances.append((values[0], values[1]))
@@ -990,7 +1108,7 @@ class GLiNER2(Extractor):
         metadata: Dict,
         cls_fields: Dict,
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ) -> List[Dict]:
         """Extract structure results with optional position tracking."""
         instances = []
@@ -1008,7 +1126,9 @@ class GLiNER2(Extractor):
                 field_key = f"{struct_name}.{fname}"
                 meta = metadata.get("field_metadata", {}).get(field_key, {})
                 meta_threshold = meta.get("threshold")
-                field_threshold = meta_threshold if meta_threshold is not None else threshold
+                field_threshold = (
+                    meta_threshold if meta_threshold is not None else threshold
+                )
                 dtype = meta.get("dtype", "list")
                 validators = meta.get("validators", [])
 
@@ -1028,7 +1148,9 @@ class GLiNER2(Extractor):
                                 score = prefix_scores[idx, 0].item()
                                 if score >= field_threshold:
                                     if include_confidence:
-                                        selected.append({"text": choice, "confidence": score})
+                                        selected.append(
+                                            {"text": choice, "confidence": score}
+                                        )
                                     else:
                                         selected.append(choice)
                                     seen.add(choice)
@@ -1045,7 +1167,10 @@ class GLiNER2(Extractor):
                                     best = choice
                         if best and best_score >= field_threshold:
                             if include_confidence:
-                                instance[fname] = {"text": best, "confidence": best_score}
+                                instance[fname] = {
+                                    "text": best,
+                                    "confidence": best_score,
+                                }
                             else:
                                 instance[fname] = best
                         else:
@@ -1053,31 +1178,41 @@ class GLiNER2(Extractor):
                 else:
                     # Regular span field - track positions
                     spans = self._find_spans(
-                        scores[fidx], field_threshold, text_len, text,
-                        start_map, end_map
+                        scores[fidx],
+                        field_threshold,
+                        text_len,
+                        text,
+                        start_map,
+                        end_map,
                     )
 
                     if validators:
-                        spans = [s for s in spans if all(v.validate(s[0]) for v in validators)]
+                        spans = [
+                            s
+                            for s in spans
+                            if all(v.validate(s[0]) for v in validators)
+                        ]
 
                     if dtype == "list":
-                        instance[fname] = self._format_spans(spans, include_confidence, include_spans)
+                        instance[fname] = self._format_spans(
+                            spans, include_confidence, include_spans
+                        )
                     else:
                         if spans:
                             text_val, conf, char_start, char_end = spans[0]
-                            
+
                             if include_spans and include_confidence:
                                 instance[fname] = {
                                     "text": text_val,
                                     "confidence": conf,
                                     "start": char_start,
-                                    "end": char_end
+                                    "end": char_end,
                                 }
                             elif include_spans:
                                 instance[fname] = {
                                     "text": text_val,
                                     "start": char_start,
-                                    "end": char_end
+                                    "end": char_end,
                                 }
                             elif include_confidence:
                                 instance[fname] = {"text": text_val, "confidence": conf}
@@ -1099,7 +1234,7 @@ class GLiNER2(Extractor):
         text_len: int,
         text: str,
         start_map: List[int],
-        end_map: List[int]
+        end_map: List[int],
     ) -> List[Tuple[str, float, int, int]]:
         """Find valid spans above threshold. Returns (text, confidence, char_start, char_end)."""
         valid = torch.where(scores >= threshold)
@@ -1123,10 +1258,7 @@ class GLiNER2(Extractor):
         return spans
 
     def _format_spans(
-        self,
-        spans: List[Tuple],
-        include_confidence: bool,
-        include_spans: bool = False
+        self, spans: List[Tuple], include_confidence: bool, include_spans: bool = False
     ) -> Union[List[str], List[Dict], List[Tuple]]:
         """Format spans with overlap removal and optional position info."""
         if not spans:
@@ -1142,7 +1274,10 @@ class GLiNER2(Extractor):
 
         # Format based on flags
         if include_spans and include_confidence:
-            return [{"text": s[0], "confidence": s[1], "start": s[2], "end": s[3]} for s in selected]
+            return [
+                {"text": s[0], "confidence": s[1], "start": s[2], "end": s[3]}
+                for s in selected
+            ]
         elif include_spans:
             return [{"text": s[0], "start": s[2], "end": s[3]} for s in selected]
         elif include_confidence:
@@ -1167,7 +1302,7 @@ class GLiNER2(Extractor):
         results: Dict,
         include_confidence: bool = False,
         requested_relations: List[str] = None,
-        classification_tasks: List[str] = None
+        classification_tasks: List[str] = None,
     ) -> Dict[str, Any]:
         """Format extraction results."""
         formatted = {}
@@ -1178,10 +1313,10 @@ class GLiNER2(Extractor):
         for key, value in results.items():
             # Check if this is a classification task (takes priority)
             is_classification = key in classification_tasks
-            
+
             # Check if this is a relation
             is_relation = False
-            
+
             if not is_classification:
                 # Check if key is in requested_relations (this takes priority)
                 if key in requested_relations:
@@ -1192,7 +1327,11 @@ class GLiNER2(Extractor):
                     if isinstance(value[0], tuple) and len(value[0]) == 2:
                         is_relation = True
                     # Check for dict format with head/tail keys: [{"head": ..., "tail": ...}, ...]
-                    elif isinstance(value[0], dict) and "head" in value[0] and "tail" in value[0]:
+                    elif (
+                        isinstance(value[0], dict)
+                        and "head" in value[0]
+                        and "tail" in value[0]
+                    ):
                         is_relation = True
 
             if is_classification:
@@ -1200,13 +1339,20 @@ class GLiNER2(Extractor):
                 if isinstance(value, list):
                     # Multi-label classification
                     if include_confidence:
-                        formatted[key] = [{"label": l, "confidence": c} for l, c in value]
+                        formatted[key] = [
+                            {"label": label, "confidence": conf}
+                            for label, conf in value
+                        ]
                     else:
-                        formatted[key] = [l for l, _ in value]
+                        formatted[key] = [label for label, _ in value]
                 elif isinstance(value, tuple):
                     # Single-label classification
                     label, conf = value
-                    formatted[key] = {"label": label, "confidence": conf} if include_confidence else label
+                    formatted[key] = (
+                        {"label": label, "confidence": conf}
+                        if include_confidence
+                        else label
+                    )
                 else:
                     formatted[key] = value
             elif is_relation:
@@ -1225,19 +1371,30 @@ class GLiNER2(Extractor):
                         formatted[key] = value
                 elif isinstance(value[0], dict):
                     if key == "entities":
-                        formatted[key] = self._format_entity_dict(value[0], include_confidence)
+                        formatted[key] = self._format_entity_dict(
+                            value[0], include_confidence
+                        )
                     else:
-                        formatted[key] = [self._format_struct(v, include_confidence) for v in value]
+                        formatted[key] = [
+                            self._format_struct(v, include_confidence) for v in value
+                        ]
                 elif isinstance(value[0], tuple):
                     if include_confidence:
-                        formatted[key] = [{"label": l, "confidence": c} for l, c in value]
+                        formatted[key] = [
+                            {"label": label, "confidence": conf}
+                            for label, conf in value
+                        ]
                     else:
-                        formatted[key] = [l for l, _ in value]
+                        formatted[key] = [label for label, _ in value]
                 else:
                     formatted[key] = value
             elif isinstance(value, tuple):
                 label, conf = value
-                formatted[key] = {"label": label, "confidence": conf} if include_confidence else label
+                formatted[key] = (
+                    {"label": label, "confidence": conf}
+                    if include_confidence
+                    else label
+                )
             elif isinstance(value, dict):
                 formatted[key] = self._format_struct(value, include_confidence)
             else:
@@ -1265,7 +1422,11 @@ class GLiNER2(Extractor):
                         text, conf, start, end = span
                         if text and text.lower() not in seen:
                             seen.add(text.lower())
-                            unique.append({"text": text, "confidence": conf} if include_confidence else text)
+                            unique.append(
+                                {"text": text, "confidence": conf}
+                                if include_confidence
+                                else text
+                            )
                     elif isinstance(span, dict):
                         # Handle dict format (with confidence/spans)
                         text = span.get("text", "")
@@ -1280,14 +1441,18 @@ class GLiNER2(Extractor):
                 formatted[name] = unique
             elif isinstance(spans, tuple):
                 text, conf, _, _ = spans
-                formatted[name] = {"text": text, "confidence": conf} if include_confidence and text else text
+                formatted[name] = (
+                    {"text": text, "confidence": conf}
+                    if include_confidence and text
+                    else text
+                )
             else:
                 formatted[name] = spans or None
         return formatted
 
     def _format_struct(self, struct: Dict, include_confidence: bool) -> Dict:
         formatted = {}
-        for field, value in struct.items():
+        for field_name, value in struct.items():
             if isinstance(value, list):
                 unique = []
                 seen = set()
@@ -1296,7 +1461,11 @@ class GLiNER2(Extractor):
                         text, conf, _, _ = v
                         if text and text.lower() not in seen:
                             seen.add(text.lower())
-                            unique.append({"text": text, "confidence": conf} if include_confidence else text)
+                            unique.append(
+                                {"text": text, "confidence": conf}
+                                if include_confidence
+                                else text
+                            )
                     elif isinstance(v, dict):
                         # Handle dict format (with confidence/spans)
                         text = v.get("text", "")
@@ -1308,43 +1477,92 @@ class GLiNER2(Extractor):
                         if v and v.lower() not in seen:
                             seen.add(v.lower())
                             unique.append(v)
-                formatted[field] = unique
+                formatted[field_name] = unique
             elif isinstance(value, tuple):
                 text, conf, _, _ = value
-                formatted[field] = {"text": text, "confidence": conf} if include_confidence and text else text
+                formatted[field_name] = (
+                    {"text": text, "confidence": conf}
+                    if include_confidence and text
+                    else text
+                )
             elif value:
-                formatted[field] = value
+                formatted[field_name] = value
             else:
-                formatted[field] = None
+                formatted[field_name] = None
         return formatted
 
     # =========================================================================
     # Convenience Methods (route through batch)
     # =========================================================================
 
-    def extract(self, text: str, schema, threshold: float = 0.5,
-                format_results: bool = True, include_confidence: bool = False,
-                include_spans: bool = False) -> Dict:
+    def extract(
+        self,
+        text: str,
+        schema,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> Dict:
         """Extract from single text."""
-        return self.batch_extract([text], schema, 1, threshold, 0, format_results, include_confidence, include_spans)[0]
+        return self.batch_extract(
+            [text],
+            schema,
+            1,
+            threshold,
+            0,
+            format_results,
+            include_confidence,
+            include_spans,
+        )[0]
 
-    def extract_entities(self, text: str, entity_types, threshold: float = 0.5,
-                        format_results: bool = True, include_confidence: bool = False,
-                        include_spans: bool = False) -> Dict:
+    def extract_entities(
+        self,
+        text: str,
+        entity_types,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> Dict:
         """Extract entities from text."""
         schema = self.create_schema().entities(entity_types)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        return self.extract(
+            text, schema, threshold, format_results, include_confidence, include_spans
+        )
 
-    def batch_extract_entities(self, texts: List[str], entity_types, batch_size: int = 8,
-                               threshold: float = 0.5, format_results: bool = True,
-                               include_confidence: bool = False, include_spans: bool = False) -> List[Dict]:
+    def batch_extract_entities(
+        self,
+        texts: List[str],
+        entity_types,
+        batch_size: int = 8,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> List[Dict]:
         """Batch extract entities."""
         schema = self.create_schema().entities(entity_types)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans)
+        return self.batch_extract(
+            texts,
+            schema,
+            batch_size,
+            threshold,
+            0,
+            format_results,
+            include_confidence,
+            include_spans,
+        )
 
-    def classify_text(self, text: str, tasks: Dict, threshold: float = 0.5,
-                     format_results: bool = True, include_confidence: bool = False,
-                     include_spans: bool = False) -> Dict:
+    def classify_text(
+        self,
+        text: str,
+        tasks: Dict,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> Dict:
         """Classify text."""
         schema = self.create_schema()
         for name, config in tasks.items():
@@ -1354,11 +1572,20 @@ class GLiNER2(Extractor):
                 schema.classification(name, labels, **cfg)
             else:
                 schema.classification(name, config)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        return self.extract(
+            text, schema, threshold, format_results, include_confidence, include_spans
+        )
 
-    def batch_classify_text(self, texts: List[str], tasks: Dict, batch_size: int = 8,
-                           threshold: float = 0.5, format_results: bool = True,
-                           include_confidence: bool = False, include_spans: bool = False) -> List[Dict]:
+    def batch_classify_text(
+        self,
+        texts: List[str],
+        tasks: Dict,
+        batch_size: int = 8,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> List[Dict]:
         """Batch classify texts."""
         schema = self.create_schema()
         for name, config in tasks.items():
@@ -1368,11 +1595,26 @@ class GLiNER2(Extractor):
                 schema.classification(name, labels, **cfg)
             else:
                 schema.classification(name, config)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans)
+        return self.batch_extract(
+            texts,
+            schema,
+            batch_size,
+            threshold,
+            0,
+            format_results,
+            include_confidence,
+            include_spans,
+        )
 
-    def extract_json(self, text: str, structures: Dict, threshold: float = 0.5,
-                    format_results: bool = True, include_confidence: bool = False,
-                    include_spans: bool = False) -> Dict:
+    def extract_json(
+        self,
+        text: str,
+        structures: Dict,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> Dict:
         """Extract structured data."""
         schema = self.create_schema()
         for parent, fields in structures.items():
@@ -1380,11 +1622,20 @@ class GLiNER2(Extractor):
             for spec in fields:
                 name, dtype, choices, desc = self._parse_field_spec(spec)
                 builder.field(name, dtype=dtype, choices=choices, description=desc)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        return self.extract(
+            text, schema, threshold, format_results, include_confidence, include_spans
+        )
 
-    def batch_extract_json(self, texts: List[str], structures: Dict, batch_size: int = 8,
-                          threshold: float = 0.5, format_results: bool = True,
-                          include_confidence: bool = False, include_spans: bool = False) -> List[Dict]:
+    def batch_extract_json(
+        self,
+        texts: List[str],
+        structures: Dict,
+        batch_size: int = 8,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> List[Dict]:
         """Batch extract structured data."""
         schema = self.create_schema()
         for parent, fields in structures.items():
@@ -1392,33 +1643,68 @@ class GLiNER2(Extractor):
             for spec in fields:
                 name, dtype, choices, desc = self._parse_field_spec(spec)
                 builder.field(name, dtype=dtype, choices=choices, description=desc)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans)
+        return self.batch_extract(
+            texts,
+            schema,
+            batch_size,
+            threshold,
+            0,
+            format_results,
+            include_confidence,
+            include_spans,
+        )
 
-    def extract_relations(self, text: str, relation_types, threshold: float = 0.5,
-                         format_results: bool = True, include_confidence: bool = False,
-                         include_spans: bool = False) -> Dict:
+    def extract_relations(
+        self,
+        text: str,
+        relation_types,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> Dict:
         """Extract relations."""
         schema = self.create_schema().relations(relation_types)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans)
+        return self.extract(
+            text, schema, threshold, format_results, include_confidence, include_spans
+        )
 
-    def batch_extract_relations(self, texts: List[str], relation_types, batch_size: int = 8,
-                               threshold: float = 0.5, format_results: bool = True,
-                               include_confidence: bool = False, include_spans: bool = False) -> List[Dict]:
+    def batch_extract_relations(
+        self,
+        texts: List[str],
+        relation_types,
+        batch_size: int = 8,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> List[Dict]:
         """Batch extract relations."""
         schema = self.create_schema().relations(relation_types)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans)
+        return self.batch_extract(
+            texts,
+            schema,
+            batch_size,
+            threshold,
+            0,
+            format_results,
+            include_confidence,
+            include_spans,
+        )
 
-    def _parse_field_spec(self, spec: Union[str, Dict]) -> Tuple[str, str, Optional[List[str]], Optional[str]]:
+    def _parse_field_spec(
+        self, spec: Union[str, Dict]
+    ) -> Tuple[str, str, Optional[List[str]], Optional[str]]:
         """Parse field specification string or dictionary.
-        
+
         Format: "name::dtype::choices::description" where all parts after name are optional.
         - dtype: 'str' for single value, 'list' for multiple values
         - choices: [option1|option2|...] for enumerated options
         - description: free text description
-        
+
         Examples:
             "restaurant::str::Restaurant name"
-            "seating::[indoor|outdoor|bar]::Seating preference"  
+            "seating::[indoor|outdoor|bar]::Seating preference"
             "dietary::[vegetarian|vegan|gluten-free|none]::list::Dietary restrictions"
         """
         if isinstance(spec, dict):
@@ -1426,10 +1712,10 @@ class GLiNER2(Extractor):
                 spec.get("name", ""),
                 spec.get("dtype", "list"),
                 spec.get("choices"),
-                spec.get("description")
+                spec.get("description"),
             )
 
-        parts = spec.split('::')
+        parts = spec.split("::")
         name = parts[0]
         dtype, choices, desc = "list", None, None
         dtype_explicitly_set = False
@@ -1438,11 +1724,11 @@ class GLiNER2(Extractor):
             return name, dtype, choices, desc
 
         for part in parts[1:]:
-            if part in ['str', 'list']:
+            if part in ["str", "list"]:
                 dtype = part
                 dtype_explicitly_set = True
-            elif part.startswith('[') and part.endswith(']'):
-                choices = [c.strip() for c in part[1:-1].split('|')]
+            elif part.startswith("[") and part.endswith("]"):
+                choices = [c.strip() for c in part[1:-1].split("|")]
                 # Only default to "str" if dtype wasn't explicitly set
                 if not dtype_explicitly_set:
                     dtype = "str"
