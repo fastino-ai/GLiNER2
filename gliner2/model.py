@@ -178,6 +178,20 @@ class Extractor(PreTrainedModel):
         # Encode batch through transformer
         all_token_embs, all_schema_embs = self._encode_batch(batch)
 
+        # Batch span rep for samples that need it
+        span_samples = []
+        for i in range(len(batch)):
+            has_span = any(t != "classifications" for t in batch.task_types[i])
+            if has_span and all_token_embs[i].numel() > 0:
+                span_samples.append(i)
+
+        all_span_info = [None] * len(batch)
+        if span_samples:
+            span_embs = [all_token_embs[i] for i in span_samples]
+            span_results = self.compute_span_rep_batched(span_embs)
+            for idx, si in zip(span_samples, span_results):
+                all_span_info[idx] = si
+
         # Compute losses for each sample
         cls_losses = []
         struct_losses = []
@@ -192,7 +206,8 @@ class Extractor(PreTrainedModel):
                     embs_per_schema=all_schema_embs[i],
                     task_types=batch.task_types[i],
                     structure_labels=batch.structure_labels[i],
-                    device=device
+                    device=device,
+                    span_info=all_span_info[i]
                 )
 
                 cls_losses.append(sample_losses["classification"])
@@ -307,7 +322,8 @@ class Extractor(PreTrainedModel):
             embs_per_schema: List[List[torch.Tensor]],
             task_types: List[str],
             structure_labels: List[Any],
-            device: torch.device
+            device: torch.device,
+            span_info: Optional[Dict[str, Any]] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Compute all losses for a single sample.
@@ -318,6 +334,8 @@ class Extractor(PreTrainedModel):
             task_types: Task type for each schema
             structure_labels: Labels for each schema
             device: Computation device
+            span_info: Pre-computed span representations (from batched computation).
+                       If None, computed on-the-fly for this sample.
 
         Returns:
             Dict with classification, structure, and count losses
@@ -326,11 +344,11 @@ class Extractor(PreTrainedModel):
         struct_loss = torch.tensor(0.0, device=device)
         count_loss = torch.tensor(0.0, device=device)
 
-        # Compute span representations if needed
-        has_span_task = any(t != "classifications" for t in task_types)
-        span_info = None
-        if has_span_task and token_embeddings.numel() > 0:
-            span_info = self.compute_span_rep(token_embeddings)
+        # Compute span representations if needed and not pre-computed
+        if span_info is None:
+            has_span_task = any(t != "classifications" for t in task_types)
+            if has_span_task and token_embeddings.numel() > 0:
+                span_info = self.compute_span_rep(token_embeddings)
 
         all_counts = []
         all_p_embs = []
@@ -399,18 +417,21 @@ class Extractor(PreTrainedModel):
         text_length = len(token_embeddings)
         device = token_embeddings.device
 
-        spans_idx = []
-        for i in range(text_length):
-            for j in range(self.max_width):
-                if i + j < text_length:
-                    spans_idx.append((i, i + j))
-                else:
-                    spans_idx.append((-1, -1))
+        # Vectorized span index generation
+        starts = torch.arange(text_length, device=device).unsqueeze(1).expand(-1, self.max_width)
+        offsets = torch.arange(self.max_width, device=device).unsqueeze(0)
+        ends = starts + offsets
+        valid = ends < text_length
 
-        spans_idx = torch.tensor([spans_idx], dtype=torch.long, device=device)
+        starts_flat = starts.reshape(-1)
+        ends_flat = ends.reshape(-1)
+        invalid = ~valid.reshape(-1)
+        starts_flat = torch.where(invalid, torch.tensor(-1, device=device), starts_flat)
+        ends_flat = torch.where(invalid, torch.tensor(-1, device=device), ends_flat)
+        spans_idx = torch.stack([starts_flat, ends_flat], dim=-1).unsqueeze(0)
 
         # Mask invalid spans
-        span_mask = (spans_idx[:, :, 0] == -1) | (spans_idx[:, :, 1] == -1)
+        span_mask = invalid.unsqueeze(0)
 
         # Replace invalid with (0, 0) for safe indexing
         safe_spans = torch.where(
@@ -430,6 +451,74 @@ class Extractor(PreTrainedModel):
             "spans_idx": spans_idx,
             "span_mask": span_mask
         }
+
+    def compute_span_rep_batched(
+            self,
+            token_embs_list: List[torch.Tensor],
+    ) -> List[Dict[str, Any]]:
+        """
+        Batch span rep computation across multiple samples.
+
+        Pads token embeddings to the max text length, builds span indices once
+        for the padded length, then runs a single forward pass through
+        SpanMarkerV0. The results are unpacked per-sample with correct shapes.
+
+        Bit-identical to calling compute_span_rep per sample because
+        SpanMarkerV0 uses pointwise MLPs + gather (no cross-position mixing),
+        and we only use valid-position outputs.
+
+        Args:
+            token_embs_list: List of (text_len_i, hidden) tensors
+
+        Returns:
+            List of dicts with span_rep, spans_idx, span_mask per sample
+        """
+        if not token_embs_list:
+            return []
+
+        device = token_embs_list[0].device
+        text_lengths = [len(t) for t in token_embs_list]
+        max_text_len = max(text_lengths)
+        batch_size = len(token_embs_list)
+        hidden = token_embs_list[0].shape[-1]
+
+        # Pad token embeddings -> (batch, max_text_len, hidden)
+        padded = torch.zeros(batch_size, max_text_len, hidden, device=device)
+        for i, emb in enumerate(token_embs_list):
+            padded[i, :text_lengths[i]] = emb
+
+        # Vectorized span indices for max_text_len
+        starts = torch.arange(max_text_len, device=device).unsqueeze(1).expand(-1, self.max_width)
+        offsets = torch.arange(self.max_width, device=device).unsqueeze(0)
+        ends = starts + offsets  # (max_text_len, max_width)
+
+        # Per-sample validity: span (i, i+j) valid iff i+j < text_lengths[sample]
+        text_len_t = torch.tensor(text_lengths, device=device)
+        ends_expanded = ends.unsqueeze(0).expand(batch_size, -1, -1)
+        valid = ends_expanded < text_len_t.view(-1, 1, 1)
+
+        starts_flat = starts.reshape(-1).unsqueeze(0).expand(batch_size, -1)
+        ends_flat = ends.reshape(-1).unsqueeze(0).expand(batch_size, -1)
+        valid_flat = valid.reshape(batch_size, -1)
+
+        safe_starts = torch.where(valid_flat, starts_flat, torch.zeros_like(starts_flat))
+        safe_ends = torch.where(valid_flat, ends_flat, torch.zeros_like(ends_flat))
+        safe_spans = torch.stack([safe_starts, safe_ends], dim=-1)  # (batch, N, 2)
+        span_mask = ~valid_flat  # (batch, N) — True for invalid
+
+        # Single batched forward pass through SpanMarkerV0
+        span_rep = self.span_rep(padded, safe_spans)  # (batch, max_text_len, max_width, hidden)
+
+        # Unpack per-sample results
+        results = []
+        for i in range(batch_size):
+            tl = text_lengths[i]
+            results.append({
+                "span_rep": span_rep[i, :tl, :, :],
+                "spans_idx": safe_spans[i:i+1, :, :],
+                "span_mask": span_mask[i:i+1, :],
+            })
+        return results
 
     def compute_struct_loss(
             self,
