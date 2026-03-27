@@ -11,7 +11,7 @@ from gliner2.api_client import (
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, content: bytes, json_data=None, json_error: Exception | None = None):
+    def __init__(self, status_code: int, content: bytes, json_data=None, json_error = None):
         self.status_code = status_code
         self.content = content
         self._json_data = json_data
