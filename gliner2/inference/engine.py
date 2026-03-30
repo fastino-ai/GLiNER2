@@ -1310,7 +1310,7 @@ class GLiNER2(Extractor):
                 formatted[name] = unique
             elif isinstance(spans, tuple):
                 text, conf, _, _ = spans
-                formatted[name] = {"text": text, "confidence": conf} if include_confidence and text else text
+                formatted[name] = {"text": text, "confidence": conf} if include_confidence else text
             else:
                 formatted[name] = spans or None
         return formatted
@@ -1341,7 +1341,7 @@ class GLiNER2(Extractor):
                 formatted[field] = unique
             elif isinstance(value, tuple):
                 text, conf, _, _ = value
-                formatted[field] = {"text": text, "confidence": conf} if include_confidence and text else text
+                formatted[field] = {"text": text, "confidence": conf} if include_confidence else text
             elif value:
                 formatted[field] = value
             else:
