@@ -1293,8 +1293,8 @@ class GLiNER2(Extractor):
                 for span in spans:
                     if isinstance(span, tuple):
                         text, conf, start, end = span
-                        if text and text.lower() not in seen:
-                            seen.add(text.lower())
+                        if text and (text.lower(), start, end) not in seen:
+                            seen.add((text.lower(), start, end))
                             unique.append({"text": text, "confidence": conf} if include_confidence else text)
                     elif isinstance(span, dict):
                         # Handle dict format (with confidence/spans)
@@ -1323,9 +1323,9 @@ class GLiNER2(Extractor):
                 seen = set()
                 for v in value:
                     if isinstance(v, tuple):
-                        text, conf, _, _ = v
-                        if text and text.lower() not in seen:
-                            seen.add(text.lower())
+                        text, conf, start, end = v
+                        if text and (text.lower(), start, end) not in seen:
+                            seen.add((text.lower(), start, end))
                             unique.append({"text": text, "confidence": conf} if include_confidence else text)
                     elif isinstance(v, dict):
                         # Handle dict format (with confidence/spans)

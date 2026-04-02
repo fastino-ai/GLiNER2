@@ -103,6 +103,19 @@ def test_batch_entity_extraction():
     print("=" * 80)
 
 
+def test_duplicate_entities_at_different_positions():
+    """Same entity text at different positions should both be returned."""
+    # Simulate two spans: "John" at pos 11 and "John" at pos 35
+    entities = {
+        "name": [
+            ("John", 0.99, 11, 15),
+            ("John", 0.98, 35, 39),
+        ]
+    }
+    result = GLiNER2._format_entity_dict(None, entities, include_confidence=False)
+    assert len(result["name"]) == 2, "Both occurrences of 'John' should be returned"
+
+
 if __name__ == "__main__":
     test_entity_extraction()
     test_batch_entity_extraction()
