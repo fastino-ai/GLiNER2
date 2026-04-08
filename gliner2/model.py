@@ -144,20 +144,43 @@ class Extractor(PreTrainedModel):
         self._print_config(config)
 
     def _print_config(self, config):
+        _attn_impl, _ = self._resolve_attn_impl()
+        _actual = getattr(self.encoder.config, "_attn_implementation", None)
         print("=" * 60)
         print("🧠 Model Configuration")
         print("=" * 60)
         print(f"Encoder model      : {config.model_name}")
         print(f"Counting layer     : {config.counting_layer}")
         print(f"Token pooling      : {config.token_pooling}")
+        print(f"Attention backend  : requested={_attn_impl!r}, actual={_actual!r}")
         print("=" * 60)
+
+    @staticmethod
+    def _resolve_attn_impl() -> tuple:
+        """Resolve attention implementation and dtype from environment.
+
+        FLASH_ATTN=1 (or "true"/"yes") enables flash_attention_2.
+        USE_FLASHDEBERTA=1 enables the FlashDeberta backend for DeBERTa-v2 models.
+
+        Returns:
+            (attn_impl, dtype) — both may be None when flash attention is off.
+        """
+        _flash = os.environ.get("FLASH_ATTN", "").lower() in ("1", "true", "yes")
+        if _flash:
+            _attn_impl = "flash_attention_2"
+            _dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            _attn_impl = None
+            _dtype = None
+        return _attn_impl, _dtype
 
     @staticmethod
     def _load_encoder(model_name: str, encoder_config=None) -> nn.Module:
         """Load the transformer encoder, using optimized backends when available.
 
-        Checks for FlashDeberta support when the encoder is DebertaV2-based.
-        Activated by setting the USE_FLASHDEBERTA environment variable.
+        Checks for FlashDeberta support when the encoder is DebertaV2-based
+        (USE_FLASHDEBERTA env var), and for generic flash_attention_2 support
+        via the FLASH_ATTN env var.
 
         Args:
             model_name: Name or path of the pretrained model.
@@ -167,6 +190,8 @@ class Extractor(PreTrainedModel):
         Returns:
             The initialized encoder module.
         """
+        _attn_impl, _dtype = Extractor._resolve_attn_impl()
+
         use_flashdeberta = (
             IS_FLASHDEBERTA
             and os.environ.get("USE_FLASHDEBERTA", "")
@@ -184,7 +209,13 @@ class Extractor(PreTrainedModel):
         if config_name == "DebertaV2Config" and use_flashdeberta:
             print("Using FlashDeberta backend.")
             return FlashDebertaV2Model.from_pretrained(model_name)
-        return AutoModel.from_pretrained(model_name, trust_remote_code=True)
+
+        return AutoModel.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            attn_implementation=_attn_impl,
+            **({"torch_dtype": _dtype} if _dtype is not None else {}),
+        )
 
     # =========================================================================
     # Main Forward Pass
