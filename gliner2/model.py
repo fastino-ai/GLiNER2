@@ -152,7 +152,10 @@ class Extractor(PreTrainedModel):
         print(f"Encoder model      : {config.model_name}")
         print(f"Counting layer     : {config.counting_layer}")
         print(f"Token pooling      : {config.token_pooling}")
-        print(f"Attention backend  : requested={_attn_impl!r}, actual={_actual!r}")
+        if _attn_impl is not None and _actual != _attn_impl:
+            print(f"Attention backend  : requested={_attn_impl!r}, actual={_actual!r} (fallback — model does not support {_attn_impl})")
+        else:
+            print(f"Attention backend  : {_actual!r}")
         print("=" * 60)
 
     @staticmethod
@@ -202,7 +205,12 @@ class Extractor(PreTrainedModel):
             if config_name == "DebertaV2Config" and use_flashdeberta:
                 print("Using FlashDeberta backend.")
                 return FlashDebertaV2Model(encoder_config)
-            return AutoModel.from_config(encoder_config, trust_remote_code=True)
+            return AutoModel.from_config(
+                encoder_config,
+                trust_remote_code=True,
+                attn_implementation=_attn_impl,
+                **({"torch_dtype": _dtype} if _dtype is not None else {}),
+            )
 
         pretrained_config = AutoConfig.from_pretrained(model_name)
         config_name = pretrained_config.__class__.__name__
