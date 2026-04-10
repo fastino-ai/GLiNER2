@@ -4,6 +4,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://badge.fury.io/py/gliner2.svg)](https://badge.fury.io/py/gliner2)
 [![Downloads](https://pepy.tech/badge/gliner2)](https://pepy.tech/project/gliner2)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/fastino-ai/GLiNER2)
 
 > *Extract entities, classify text, parse structured data, and extract relations—all in one efficient model.*
 
