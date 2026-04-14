@@ -144,7 +144,7 @@ class Extractor(PreTrainedModel):
         self._print_config(config)
 
     def _print_config(self, config):
-        _attn_impl, _ = self._resolve_attn_impl()
+        _attn_impl, _dtype = self._resolve_attn_impl()
         _actual = getattr(self.encoder.config, "_attn_implementation", None)
         print("=" * 60)
         print("🧠 Model Configuration")
@@ -156,6 +156,7 @@ class Extractor(PreTrainedModel):
             print(f"Attention backend  : requested={_attn_impl!r}, actual={_actual!r} (fallback — model does not support {_attn_impl})")
         else:
             print(f"Attention backend  : {_actual!r}")
+        print(f"Encoder dtype      : {_dtype}")
         print("=" * 60)
 
     @staticmethod
@@ -171,7 +172,13 @@ class Extractor(PreTrainedModel):
         _flash = os.environ.get("FLASH_ATTN", "").lower() in ("1", "true", "yes")
         if _flash:
             _attn_impl = "flash_attention_2"
-            _dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            _dtype_env = os.environ.get("FLASH_ATTN_DTYPE", "").lower()
+            if _dtype_env == "fp16":
+                _dtype = torch.float16
+            elif _dtype_env == "bf16":
+                _dtype = torch.bfloat16
+            else:
+                _dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         else:
             _attn_impl = None
             _dtype = None
@@ -209,7 +216,7 @@ class Extractor(PreTrainedModel):
                 encoder_config,
                 trust_remote_code=True,
                 attn_implementation=_attn_impl,
-                **({"torch_dtype": _dtype} if _dtype is not None else {}),
+                **({"dtype": _dtype} if _dtype is not None else {}),
             )
 
         pretrained_config = AutoConfig.from_pretrained(model_name)
@@ -222,7 +229,7 @@ class Extractor(PreTrainedModel):
             model_name,
             trust_remote_code=True,
             attn_implementation=_attn_impl,
-            **({"torch_dtype": _dtype} if _dtype is not None else {}),
+            **({"dtype": _dtype} if _dtype is not None else {}),
         )
 
     # =========================================================================
