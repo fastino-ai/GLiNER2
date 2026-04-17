@@ -1,5 +1,5 @@
 <div align="center">
-  <a href="https://pioneer.ai/gliner">
+  <a href="https://pioneer.ai/gliner" target="_blank" rel="noopener noreferrer">
     <img src="image/GitHub.png" alt="Pioneer AI - Fine-tune GLiNER with a single prompt" width="100%"/>
   </a>
 </div>
