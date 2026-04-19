@@ -1,13 +1,23 @@
+<div align="center">
+  <a href="https://pioneer.ai/gliner" target="_blank" rel="noopener noreferrer">
+    <img src="image/GitHub.png" alt="Pioneer AI - Fine-tune GLiNER with a single prompt" width="100%"/>
+  </a>
+</div>
+
 # GLiNER2: Unified Schema-Based Information Extraction and Text Classification
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://badge.fury.io/py/gliner2.svg)](https://badge.fury.io/py/gliner2)
 [![Downloads](https://pepy.tech/badge/gliner2)](https://pepy.tech/project/gliner2)
+[![Reddit](https://img.shields.io/badge/Reddit-r%2FGLiNER-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/GLiNER/)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/fastino)
 
 > *Extract entities, classify text, parse structured data, and extract relations—all in one efficient model.*
 
 GLiNER2 unifies **Named Entity Recognition**, **Text Classification**, **Structured Data Extraction**, and **Relation Extraction** into a single 205M parameter model. It provides efficient CPU-based inference without requiring complex pipelines or external API dependencies.
+
+Fine-tune via [Pioneer](https://pioneer.ai/gliner). Additional documentation via [Pioneer docs](https://agent.pioneer.ai/docs/api-reference). Join discussions on [Discord](https://discord.gg/fastino) and [Reddit](https://www.reddit.com/r/GLiNER/).
 
 ## ✨ Why GLiNER2?
 
