@@ -28,11 +28,22 @@ Fine-tune via [Pioneer](https://pioneer.ai/gliner). Additional documentation via
 ## 🚀 Installation & Quick Start
 
 ```bash
+# Schema validation, API client, training-data utilities — no torch required
 pip install gliner2
+
+# Full local inference and training (installs torch, transformers, etc.)
+pip install gliner2[local]
 ```
 
+The base install gives you `Schema`, `SchemaInput`, `RegexValidator`, `GLiNER2API`,
+`InputExample`, `TrainingDataset`, and all JSONL validation tooling — everything
+needed to build schemas, validate data, and call the cloud API without pulling in
+PyTorch.
+
+To load and run models locally, install the `[local]` extra:
+
 ```python
-from gliner2 import GLiNER2
+from gliner2 import GLiNER2  # requires gliner2[local]
 
 # Load model once, use everywhere
 extractor = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
