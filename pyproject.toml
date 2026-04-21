@@ -12,7 +12,7 @@ version = {attr = "gliner2.__version__"}
 name = "gliner2"
 description = "GLiNER2: Unified Schema-Based Information Extraction and Text Classification"
 readme = "README.md"
-license = "Apache-2.0"
+license = {file = "LICENSE"}
 requires-python = ">=3.8"
 
 maintainers = [
