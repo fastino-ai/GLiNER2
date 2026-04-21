@@ -885,14 +885,17 @@ class GLiNER2Trainer:
         logger.info(f"  Total optimization steps = {max_steps}")
         logger.info(f"  Warmup steps = {warmup_steps}")
         
-        # Log trainable parameters
+        # Log trainable parameters. Uses the same manual-count expression in
+        # both branches; the LoRA branch just labels the output differently.
+        # (Previously called ``count_lora_parameters`` from ``gliner2.training.lora``,
+        # which was dropped from the import list during the PEFT migration but
+        # left behind here, producing a NameError at the start of every LoRA run.)
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        percentage = (trainable_params / total_params * 100) if total_params > 0 else 0.0
         if self.config.use_lora:
-            lora_params, total_params, percentage = count_lora_parameters(self.model)
-            logger.info(f"  LoRA enabled: {lora_params:,} trainable / {total_params:,} total ({percentage:.2f}%)")
+            logger.info(f"  LoRA enabled: {trainable_params:,} trainable / {total_params:,} total ({percentage:.2f}%)")
         else:
-            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-            total_params = sum(p.numel() for p in self.model.parameters())
-            percentage = (trainable_params / total_params * 100) if total_params > 0 else 0.0
             logger.info(f"  Trainable parameters: {trainable_params:,} / {total_params:,} ({percentage:.2f}%)")
 
         # Training state
