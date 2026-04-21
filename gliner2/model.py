@@ -9,6 +9,8 @@ import importlib
 import logging
 import os
 import tempfile
+import warnings
+from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
 import torch
@@ -800,127 +802,128 @@ class Extractor(PreTrainedModel):
         logger.info("Compiled encoder, span-rep, and count-embed with torch.compile(dynamic=True)")
         return self
 
-    def load_adapter(self, adapter_path: str) -> 'Extractor':
-        """
-        Load a LoRA adapter onto this model.
+    # =========================================================================
+    # LoRA / PEFT — new blessed API
+    # =========================================================================
 
-        If an adapter is already loaded, it will be unloaded first.
+    def apply_lora(
+        self,
+        r: int = 8,
+        alpha: float = 16.0,
+        dropout: float = 0.0,
+        targets: list[str] | None = None,
+        use_dora: bool = False,
+    ) -> "PeftModel":
+        """Apply LoRA adapters and return a PeftModel ready for training.
 
         Args:
-            adapter_path: Path to adapter directory
+            r: LoRA rank.
+            alpha: LoRA alpha scaling factor.
+            dropout: LoRA dropout probability.
+            targets: High-level target group names. Defaults to ``["encoder"]``.
+            use_dora: Whether to use DoRA weight decomposition.
 
         Returns:
-            self for method chaining
-            
-        Example:
-            model.load_adapter("./legal_adapter")
-            results = model.extract_entities(text, entities)
+            PeftModel wrapping this Extractor.
         """
+        from peft import LoraConfig as PeftLoraConfig, get_peft_model
+        from gliner2.training.lora import _resolve_targets, _cast_lora_dtype
+
+        cfg = PeftLoraConfig(
+            r=r, lora_alpha=alpha, lora_dropout=dropout,
+            target_modules=_resolve_targets(self, targets or ["encoder"]),
+            bias="none", use_dora=use_dora,
+        )
+        peft_model = get_peft_model(self, cfg)
+        _cast_lora_dtype(peft_model)
+        return peft_model
+
+    # =========================================================================
+    # Legacy adapter API (deprecated — PendingDeprecationWarning)
+    # =========================================================================
+
+    def load_adapter(self, adapter_path: str) -> 'Extractor':
+        """Load a LoRA adapter onto this model."""
+        warnings.warn(
+            "Extractor.load_adapter is deprecated; use PeftModel.from_pretrained() "
+            "or Extractor.apply_lora().",
+            PendingDeprecationWarning, stacklevel=2)
         from gliner2.training.lora import load_lora_adapter, LoRAAdapterConfig
-        
-        # Load adapter config
-        config = LoRAAdapterConfig.load(adapter_path)
-        
         self._lora_layers = load_lora_adapter(self, adapter_path, auto_unload=True)
-        self._adapter_config = config
+        p = Path(adapter_path)
+        self._adapter_config = LoRAAdapterConfig.load(p) if (p / "adapter_config.json").exists() else None
         return self
-    
+
     def unload_adapter(self) -> 'Extractor':
-        """
-        Unload current LoRA adapter, restoring base model.
-        
-        Returns:
-            self for method chaining
-        """
+        """Unload current LoRA adapter, restoring base model."""
+        warnings.warn(
+            "Extractor.unload_adapter is deprecated; use PeftModel.merge_and_unload().",
+            PendingDeprecationWarning, stacklevel=2)
         from gliner2.training.lora import unload_lora_adapter
-        
         if self._lora_layers:
             unload_lora_adapter(self)
             self._lora_layers = {}
             self._adapter_config = None
         return self
-    
+
     def merge_lora(self) -> 'Extractor':
-        """
-        Merge LoRA weights into base model and remove adapter structure.
-        
-        After calling this, the model will have standard Linear layers with
-        merged weights. LoRA adapters are permanently removed.
-        
-        Returns:
-            self for method chaining
-            
-        Raises:
-            ValueError: If no adapter is loaded
-            
-        Example:
-            model.load_adapter("./my_adapter")
-            model.merge_lora()  # Now model has merged weights, no LoRA
-            model.save_pretrained("./merged_model")
-        """
+        """Merge LoRA weights into base model and remove adapter structure."""
+        warnings.warn(
+            "Extractor.merge_lora is deprecated; use PeftModel.merge_and_unload().",
+            PendingDeprecationWarning, stacklevel=2)
         if not self._lora_layers:
             raise ValueError("No adapter loaded. Nothing to merge.")
-        
-        from gliner2.training.lora import merge_lora_weights
-        merge_lora_weights(self)
+        from gliner2.training.lora import remove_lora_from_model
+        remove_lora_from_model(self)
         self._lora_layers = {}
         self._adapter_config = None
         return self
-    
+
     def save_adapter(self, save_path: str) -> None:
-        """
-        Save only the LoRA adapter (not full model).
-        
-        Args:
-            save_path: Directory to save adapter
-            
-        Raises:
-            ValueError: If no adapter is loaded
-        """
+        """Save only the LoRA adapter (not full model)."""
+        warnings.warn(
+            "Extractor.save_adapter is deprecated; use PeftModel.save_pretrained().",
+            PendingDeprecationWarning, stacklevel=2)
         if not self._lora_layers:
             raise ValueError("No adapter loaded. Use save_pretrained for full model.")
-        
         from gliner2.training.lora import save_lora_adapter
         save_lora_adapter(self, save_path)
-    
+
     @property
     def has_adapter(self) -> bool:
         """Check if an adapter is currently loaded."""
         return bool(self._lora_layers)
-    
+
     @property
     def adapter_config(self):
         """Get config of loaded adapter, or None."""
         return self._adapter_config
-    
+
     def save_pretrained(
-        self, 
+        self,
         save_directory: str,
         save_adapter_only: bool = False,
         merge_lora: bool = True,
         **kwargs
     ):
-        """
-        Save model to directory.
-        
-        Args:
-            save_directory: Where to save
-            save_adapter_only: If True and adapter loaded, save only adapter
-            merge_lora: If True and LoRA active, merge LoRA weights into base
-                       model and remove adapter structure before saving.
-                       WARNING: This permanently removes LoRA from the model instance.
-        """
+        """Save model to directory."""
         if save_adapter_only:
+            warnings.warn(
+                "save_pretrained(save_adapter_only=True) is deprecated; "
+                "use PeftModel.save_pretrained().",
+                PendingDeprecationWarning, stacklevel=2)
             if not self._lora_layers:
                 raise ValueError("save_adapter_only=True but no adapter loaded")
             self.save_adapter(save_directory)
             return
-        
-        # Handle LoRA merging if requested
+
         if merge_lora and self._lora_layers:
+            warnings.warn(
+                "save_pretrained(merge_lora=True) is deprecated; "
+                "use PeftModel.merge_and_unload() then save_pretrained().",
+                PendingDeprecationWarning, stacklevel=2)
             self.merge_lora()
-        
-        # Original save logic
+
         os.makedirs(save_directory, exist_ok=True)
         self.config.save_pretrained(save_directory)
 

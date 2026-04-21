@@ -22,7 +22,10 @@ maintainers = [
 
 dependencies = [
     "gliner",
+    "peft",
     "pydantic>=2.0.0",
+    "requests>=2.28",
+    "urllib3>=1.26",
 ]
 
 dynamic = ["version"]
