@@ -13,27 +13,31 @@ version = {attr = "gliner2.__version__"}
 
 [project]
 name = "gliner2"
+description = "GLiNER2: Unified Schema-Based Information Extraction and Text Classification"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.8"
 
 maintainers = [
     {name = "Urchade Zaratiana"},
 ]
 
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
 dependencies = [
+    "gliner",
+    "peft",
     "pydantic>=2.0.0",
     "requests>=2.28",
     "urllib3>=1.26",
-    "tqdm>=4.60",
 ]
 
 dynamic = ["version"]
 
-[project.optional-dependencies]
-local = [
-    "gliner",
-    "torch>=2.0",
-    "transformers>=4.40",
-    "safetensors>=0.4",
-    "numpy>=1.23",
-]
+[project.urls]
+Homepage = "https://github.com/fastino-ai/GLiNER2"
+Repository = "https://github.com/fastino-ai/GLiNER2"

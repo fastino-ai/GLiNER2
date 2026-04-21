@@ -1,0 +1,49 @@
+{
+  "__init__exports": {
+    "LoRAAdapterConfig": "(adapter_type: 'str' = 'lora', adapter_version: 'str' = '1.0', lora_r: 'int' = 8, lora_alpha: 'float' = 16.0, lora_dropout: 'float' = 0.0, target_modules: 'List[str]' = <factory>, created_at: 'str' = '') -> None",
+    "LoRAConfig": "(enabled: 'bool' = False, r: 'int' = 8, alpha: 'float' = 16.0, dropout: 'float' = 0.0, target_modules: 'List[str]' = <factory>) -> None",
+    "LoRALayer": "(base_layer: 'nn.Linear', r: 'int', alpha: 'float', dropout: 'float' = 0.0)",
+    "apply_lora_to_model": "(model: 'nn.Module', config: 'LoRAConfig') -> 'Tuple[nn.Module, Dict[str, LoRALayer]]'",
+    "has_lora_adapter": "(model: 'nn.Module') -> 'bool'",
+    "load_lora_adapter": "(model: 'nn.Module', adapter_path: 'Union[str, Path]', auto_unload: 'bool' = True) -> 'Dict[str, LoRALayer]'",
+    "merge_lora_weights": "(model: 'nn.Module') -> 'int'",
+    "save_lora_adapter": "(model: 'nn.Module', save_path: 'Union[str, Path]') -> 'None'",
+    "unload_lora_adapter": "(model: 'nn.Module') -> 'int'",
+    "unmerge_lora_weights": "(model: 'nn.Module') -> 'int'"
+  },
+  "extractor_methods": {
+    "adapter_config": "<no signature>",
+    "has_adapter": "<no signature>",
+    "load_adapter": "(self, adapter_path: str) -> 'Extractor'",
+    "merge_lora": "(self) -> 'Extractor'",
+    "save_adapter": "(self, save_path: str) -> None",
+    "save_pretrained": "(self, save_directory: str, save_adapter_only: bool = False, merge_lora: bool = True, **kwargs)",
+    "unload_adapter": "(self) -> 'Extractor'"
+  },
+  "training_config_lora_fields": {
+    "lora_alpha": {
+      "default": "32.0",
+      "type": "float"
+    },
+    "lora_dropout": {
+      "default": "0.0",
+      "type": "float"
+    },
+    "lora_r": {
+      "default": "16",
+      "type": "int"
+    },
+    "lora_target_modules": {
+      "default": "['encoder', 'span_rep', 'classifier', 'count_embed', 'count_pred']",
+      "type": "List[str]"
+    },
+    "save_adapter_only": {
+      "default": "True",
+      "type": "bool"
+    },
+    "use_lora": {
+      "default": "False",
+      "type": "bool"
+    }
+  }
+}
