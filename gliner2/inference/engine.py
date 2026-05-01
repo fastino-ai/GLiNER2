@@ -659,8 +659,9 @@ class GLiNER2(Extractor):
                             instance[fname] = None
                 else:
                     # Regular span field - track positions
+                    span_threshold = 0.0 if validators else field_threshold
                     spans = self._find_spans(
-                        scores[fidx], field_threshold, text_len, text,
+                        scores[fidx], span_threshold, text_len, text,
                         start_map, end_map
                     )
 
