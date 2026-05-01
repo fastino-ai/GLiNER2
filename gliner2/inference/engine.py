@@ -368,13 +368,11 @@ class GLiNER2(Extractor):
 
         if is_multi:
             chosen = [(labels[j], probs[j].item()) for j in range(len(labels)) if probs[j].item() >= cls_threshold]
-            if not chosen:
-                best = int(torch.argmax(probs).item())
-                chosen = [(labels[best], probs[best].item())]
             results[schema_name] = chosen
         else:
             best = int(torch.argmax(probs).item())
-            results[schema_name] = (labels[best], probs[best].item())
+            best_score = probs[best].item()
+            results[schema_name] = (labels[best], best_score) if best_score >= cls_threshold else None
 
     def _extract_span_result(
         self,
