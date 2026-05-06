@@ -663,10 +663,13 @@ class Extractor(PreTrainedModel):
 
     def push_to_hub(self, repo_id: str, private: bool = True):
         """Push model to Hugging Face Hub."""
+        from huggingface_hub import HfApi
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             self.save_pretrained(tmp_dir)
-            super().push_to_hub(repo_id=repo_id, save_dir=tmp_dir, private=private)
-            self.processor.tokenizer.push_to_hub(repo_id)
+            api = HfApi()
+            api.create_repo(repo_id=repo_id, private=private, exist_ok=True)
+            api.upload_folder(repo_id=repo_id, folder_path=tmp_dir)
 
     @classmethod
     def from_pretrained(cls, repo_or_dir: str, **kwargs):
