@@ -670,13 +670,16 @@ class GLiNER2Trainer:
                 self.model,
                 device_ids=[self.config.local_rank],
                 output_device=self.config.local_rank,
-                find_unused_parameters=True 
+                find_unused_parameters=True,
             )
             logger.info("Wrapped model in DistributedDataParallel")
 
     def _cleanup_distributed(self):
-        if self.is_distributed:
+        if self.is_distributed and dist.is_initialized():
             dist.destroy_process_group()
+        if self.is_distributed and hasattr(self.model, "module"):
+            self.model = self.model.module
+        self.is_distributed = False
 
     @property
     def is_main_process(self) -> bool:
@@ -688,7 +691,12 @@ class GLiNER2Trainer:
         if denominator == 0:
             return default
         return numerator / denominator
-    
+
+    def _get_model_config(self) -> Any:
+        """Return the underlying model config, handling DDP-wrapped models."""
+        base_model = self.model.module if self.is_distributed and hasattr(self.model, "module") else self.model
+        return getattr(base_model, "config", None)
+
     def _validate_training_setup(self, train_dataset: ExtractorDataset, eval_dataset: Optional[ExtractorDataset]):
         """Validate training setup and raise informative errors for edge cases."""
         # Check if dataset is empty
@@ -821,7 +829,8 @@ class GLiNER2Trainer:
             sampler = DistributedSampler(dataset, shuffle=shuffle)
             shuffle = False
 
-        max_len = self.config.max_len or getattr(self.model.config, "max_len", None)
+        model_config = self._get_model_config()
+        max_len = self.config.max_len or getattr(model_config, "max_len", None)
         collator = ExtractorCollator(self.processor, is_training=is_training, max_len=max_len)
 
         # Fix Bug #1 & #9: Handle small datasets
