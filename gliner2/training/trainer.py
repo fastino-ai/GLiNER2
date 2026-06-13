@@ -37,7 +37,6 @@ Basic Examples:
 from __future__ import annotations
 
 import gc
-import copy
 import json
 import logging
 import math
@@ -1264,15 +1263,21 @@ class GLiNER2Trainer:
             trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         else:
             # Full model save: merge LoRA weights if present
-            model = self.model.module if self.is_distributed else self.model
-            model_to_save = copy.deepcopy(model)
+            lora_was_merged = False
             if self.config.use_lora and self.lora_layers:
                 first_lora_layer = next(iter(self.lora_layers.values()))
                 if not first_lora_layer.merged:
-                    merge_lora_weights(model_to_save)
+                    num_merged = merge_lora_weights(self.model)
+                    lora_was_merged = True
 
-            # Save the model without mutating the live training model
-            model_to_save.save_pretrained(str(checkpoint_dir))
+            # Save the model (with merged weights if LoRA was used)
+            model = self.model.module if self.is_distributed else self.model
+            model.save_pretrained(str(checkpoint_dir))
+            
+            # Unmerge weights after saving to continue training with LoRA
+            if lora_was_merged:
+                from gliner2.training.lora import unmerge_lora_weights
+                unmerge_lora_weights(self.model)
             
             # Save LoRA configuration if used
             if self.config.use_lora:
