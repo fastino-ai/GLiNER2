@@ -9,9 +9,12 @@ import copy
 import random
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, Tuple, Iterator, List, Optional
 import torch
 from transformers import AutoTokenizer
+
+_TOKENIZE_CACHE_SIZE = 50_000
 
 
 # =============================================================================
@@ -249,6 +252,10 @@ class SchemaTransformer:
         self._token_cache = {}
         for tok in self.SPECIAL_TOKENS + ["(", ")", ",", "|"]:
             self._token_cache[tok] = self.tokenizer.tokenize(tok)
+        # Bounded LRU for every other token (words, schema labels). tokenize() is
+        # deterministic per string, so this is byte-exact; the cache only removes
+        # redundant work. Per-instance, thread-safe (functools.lru_cache).
+        self._tokenize_cached = lru_cache(maxsize=_TOKENIZE_CACHE_SIZE)(self.tokenizer.tokenize)
 
     def change_mode(self, is_training: bool):
         """Switch between training and inference mode."""
@@ -1048,11 +1055,13 @@ class SchemaTransformer:
 
             subword_pos = len(subwords)
 
-            # OPT-6: Use cached tokenizations for special tokens and punctuation
+            # OPT-6: cached tokenizations — special-token/punct seeds first, then the
+            # bounded LRU for everything else (collapses the ~99% repeated per-word
+            # tokenize() calls; byte-exact since tokenize() is deterministic).
             if token in self._token_cache:
                 sub_tokens = self._token_cache[token]
             else:
-                sub_tokens = self.tokenizer.tokenize(token)
+                sub_tokens = self._tokenize_cached(token)
             subwords.extend(sub_tokens)
             mappings.extend([(seg_type, orig_idx, schema_idx)] * len(sub_tokens))
 

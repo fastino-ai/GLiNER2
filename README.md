@@ -1,13 +1,23 @@
+<div align="center">
+  <a href="https://pioneer.ai/gliner" target="_blank" rel="noopener noreferrer">
+    <img src="image/GitHub.png" alt="Pioneer AI - Fine-tune GLiNER with a single prompt" width="100%"/>
+  </a>
+</div>
+
 # GLiNER2: Unified Schema-Based Information Extraction and Text Classification
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://badge.fury.io/py/gliner2.svg)](https://badge.fury.io/py/gliner2)
 [![Downloads](https://pepy.tech/badge/gliner2)](https://pepy.tech/project/gliner2)
+[![Reddit](https://img.shields.io/badge/Reddit-r%2FGLiNER-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/GLiNER/)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/fastino)
 
 > *Extract entities, classify text, parse structured data, and extract relations—all in one efficient model.*
 
 GLiNER2 unifies **Named Entity Recognition**, **Text Classification**, **Structured Data Extraction**, and **Relation Extraction** into a single 205M parameter model. It provides efficient CPU-based inference without requiring complex pipelines or external API dependencies.
+
+Fine-tune via [Pioneer](https://pioneer.ai/gliner). Additional documentation via [Pioneer docs](https://agent.pioneer.ai/docs/api-reference). Join discussions on [Discord](https://discord.gg/fastino) and [Reddit](https://www.reddit.com/r/GLiNER/).
 
 ## ✨ Why GLiNER2?
 
@@ -18,11 +28,22 @@ GLiNER2 unifies **Named Entity Recognition**, **Text Classification**, **Structu
 ## 🚀 Installation & Quick Start
 
 ```bash
+# Schema validation, API client, training-data utilities — no torch required
 pip install gliner2
+
+# Full local inference and training (installs torch, transformers, etc.)
+pip install gliner2[local]
 ```
 
+The base install gives you `Schema`, `SchemaInput`, `RegexValidator`, `GLiNER2API`,
+`InputExample`, `TrainingDataset`, and all JSONL validation tooling — everything
+needed to build schemas, validate data, and call the cloud API without pulling in
+PyTorch.
+
+To load and run models locally, install the `[local]` extra:
+
 ```python
-from gliner2 import GLiNER2
+from gliner2 import GLiNER2  # requires gliner2[local]
 
 # Load model once, use everywhere
 extractor = GLiNER2.from_pretrained("fastino/gliner2-base-v1")

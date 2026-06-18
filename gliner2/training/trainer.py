@@ -68,11 +68,8 @@ from gliner2.training.data import (
     DataFormat, detect_data_format, DataLoader_Factory, TrainDataInput
 )
 
-# Import LoRA for parameter-efficient fine-tuning
-from gliner2.training.lora import (
-    LoRAConfig, apply_lora_to_model, get_lora_parameters,
-    merge_lora_weights, count_lora_parameters, print_lora_info
-)
+from peft import PeftModel
+from peft.tuners.lora.layer import LoraLayer as _PeftLoraLayer
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +223,7 @@ class TrainingConfig:
     lora_r: int = 16
     lora_alpha: float = 32.0
     lora_dropout: float = 0.0
+    lora_use_dora: bool = False
     lora_target_modules: List[str] = field(default_factory=lambda: ["encoder", "span_rep", "classifier", "count_embed", "count_pred"])
     save_adapter_only: bool = True  # Only applies when use_lora=True
 
@@ -624,44 +622,24 @@ class GLiNER2Trainer:
         if not self.config.use_lora:
             logger.info("LoRA is disabled")
             return
-        
-        logger.info("Setting up LoRA for parameter-efficient fine-tuning...")
-        
-        # Freeze ALL model parameters BEFORE applying LoRA
-        for param in self.model.parameters():
-            param.requires_grad = False
+
+        for p in self.model.parameters():
+            p.requires_grad = False
         logger.info("Froze all model parameters for LoRA training")
-        
-        # Create LoRA config
-        lora_config = LoRAConfig(
-            enabled=True,
-            r=self.config.lora_r,
-            alpha=self.config.lora_alpha,
+
+        self.model = self.model.apply_lora(
+            r=self.config.lora_r, alpha=self.config.lora_alpha,
             dropout=self.config.lora_dropout,
-            target_modules=self.config.lora_target_modules,
+            targets=self.config.lora_target_modules,
+            use_dora=self.config.lora_use_dora,
         )
-        
-        # Apply LoRA (encoder: targeted modules, non-encoder: all linear layers)
-        # LoRA layers' lora_A and lora_B are nn.Parameter created after freezing,
-        # so they have requires_grad=True by default - only these get trained
-        self.model, self.lora_layers = apply_lora_to_model(
-            model=self.model,
-            config=lora_config,
-        )
-        
-        # Sync model's _lora_layers attribute
+        self.lora_layers = {n: m for n, m in self.model.named_modules() if isinstance(m, _PeftLoraLayer)}
         self.model._lora_layers = self.lora_layers
-        
-        # Print LoRA information
-        if self.is_main_process:
-            print_lora_info(self.model, lora_config)
-        
-        # Log parameter counts
-        lora_params, total_params, percentage = count_lora_parameters(self.model)
-        logger.info(
-            f"LoRA setup complete: {lora_params:,} trainable params "
-            f"out of {total_params:,} total ({percentage:.2f}%)"
-        )
+
+        lora_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        pct = (lora_params / total_params * 100) if total_params > 0 else 0.0
+        logger.info(f"LoRA setup complete: {lora_params:,} trainable / {total_params:,} total ({pct:.2f}%)")
 
     def _setup_distributed(self):
         """Setup distributed training if enabled."""
@@ -787,16 +765,11 @@ class GLiNER2Trainer:
 
     def _create_optimizer(self) -> AdamW:
         """Create optimizer with appropriate parameters based on LoRA configuration."""
-        
         if self.config.use_lora:
-            # When using LoRA: ONLY train LoRA parameters (everything else is frozen)
-            lora_params = get_lora_parameters(self.model)
-            
+            lora_params = [p for p in self.model.parameters() if p.requires_grad]
             if not lora_params:
                 raise ValueError("No LoRA parameters found. Check LoRA configuration.")
-            
-            logger.info(f"Optimizer: LoRA params only = {len(lora_params)}, LR={self.config.task_lr}")
-            
+            logger.info("Optimizer: LoRA params only = %d, LR=%s", len(lora_params), self.config.task_lr)
             return AdamW(
                 [{"params": lora_params, "lr": self.config.task_lr, "weight_decay": self.config.weight_decay}],
                 betas=(self.config.adam_beta1, self.config.adam_beta2),
@@ -942,14 +915,17 @@ class GLiNER2Trainer:
         logger.info(f"  Total optimization steps = {max_steps}")
         logger.info(f"  Warmup steps = {warmup_steps}")
         
-        # Log trainable parameters
+        # Log trainable parameters. Uses the same manual-count expression in
+        # both branches; the LoRA branch just labels the output differently.
+        # (Previously called ``count_lora_parameters`` from ``gliner2.training.lora``, 
+        # which was dropped from the import list during the PEFT migration but
+        # left behind here, producing a NameError at the start of every LoRA run.)
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        percentage = (trainable_params / total_params * 100) if total_params > 0 else 0.0
         if self.config.use_lora:
-            lora_params, total_params, percentage = count_lora_parameters(self.model)
-            logger.info(f"  LoRA enabled: {lora_params:,} trainable / {total_params:,} total ({percentage:.2f}%)")
+            logger.info(f"  LoRA enabled: {trainable_params:,} trainable / {total_params:,} total ({percentage:.2f}%)")
         else:
-            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-            total_params = sum(p.numel() for p in self.model.parameters())
-            percentage = (trainable_params / total_params * 100) if total_params > 0 else 0.0
             logger.info(f"  Trainable parameters: {trainable_params:,} / {total_params:,} ({percentage:.2f}%)")
 
         # Training state
@@ -964,6 +940,7 @@ class GLiNER2Trainer:
 
         self.progress_bar = tqdm(total=max_steps, desc="Training", disable=not self.is_main_process)
 
+        should_stop = False
         for epoch in range(num_epochs):
             self.epoch = epoch
 
@@ -1049,9 +1026,14 @@ class GLiNER2Trainer:
 
                     if self.config.eval_strategy == "steps" and self.global_step % self.config.eval_steps == 0:
                         if eval_dataset:
-                            self._evaluate(eval_dataset)
+                            prev_best = self.best_metric
+                            eval_metrics = self._evaluate(eval_dataset)
                             self.model.train()
                             self.processor.change_mode(is_training=True)
+                            if self.config.early_stopping and self._check_early_stopping(eval_metrics, prev_best):
+                                logger.info(f"Early stopping triggered at step {self.global_step}")
+                                should_stop = True
+                                break
                         self._save_checkpoint(f"checkpoint-{self.global_step}")
 
                     self.progress_bar.update(1)
@@ -1059,6 +1041,9 @@ class GLiNER2Trainer:
                     if self.global_step >= max_steps:
                         break
             
+            if should_stop:
+                break
+
             # Fix Bug #6: Flush incomplete gradient accumulation at end of epoch
             if epoch_steps % self.config.gradient_accumulation_steps != 0:
                 grad_norm = self._flush_gradients()
@@ -1071,10 +1056,11 @@ class GLiNER2Trainer:
 
             if self.config.eval_strategy == "epoch":
                 if eval_dataset:
+                    prev_best = self.best_metric
                     eval_metrics = self._evaluate(eval_dataset)
                     self.model.train()
                     self.processor.change_mode(is_training=True)
-                    if self.config.early_stopping and self._check_early_stopping(eval_metrics):
+                    if self.config.early_stopping and self._check_early_stopping(eval_metrics, prev_best):
                         logger.info(f"Early stopping triggered at epoch {epoch + 1}")
                         break
                 self._save_checkpoint(f"checkpoint-epoch-{epoch + 1}")
@@ -1180,12 +1166,13 @@ class GLiNER2Trainer:
 
         return metrics
 
-    def _check_early_stopping(self, metrics: Dict[str, float]) -> bool:
+    def _check_early_stopping(self, metrics: Dict[str, float], prev_best: Optional[float] = None) -> bool:
         metric_value = metrics.get(self.config.metric_for_best, metrics["eval_loss"])
+        compare_against = prev_best if prev_best is not None else self.best_metric
         if self.config.greater_is_better:
-            improved = metric_value > self.best_metric + self.config.early_stopping_threshold
+            improved = metric_value > compare_against + self.config.early_stopping_threshold
         else:
-            improved = metric_value < self.best_metric - self.config.early_stopping_threshold
+            improved = metric_value < compare_against - self.config.early_stopping_threshold
 
         if improved:
             self.patience_counter = 0
@@ -1252,13 +1239,26 @@ class GLiNER2Trainer:
 
         checkpoint_dir = self.output_dir / name
         checkpoint_dir.mkdir(exist_ok=True)
-        
+
         save_start = time.time()
-        
-        # Handle adapter-only saves when using LoRA
+
         if self.config.use_lora and self.config.save_adapter_only:
-            from gliner2.training.lora import save_lora_adapter
-            save_lora_adapter(self.model, checkpoint_dir)
+            # PEFT-native format only: ``self.model`` is a ``PeftModel``, so
+            # ``save_pretrained`` writes ``adapter_config.json`` (with
+            # ``peft_type: "LORA"``) + ``adapter_model.safetensors``, which is
+            # what ``PeftModel.from_pretrained`` and every downstream PEFT
+            # consumer expect. The pre-migration code also invoked
+            # ``gliner2.training.lora.save_lora_adapter`` here to emit the
+            # legacy ``adapter_weights.safetensors`` + gliner2 ``LoRAAdapterConfig``
+            # alongside the PEFT files, but ``LoRAAdapterConfig.save`` writes
+            # to the same ``adapter_config.json`` path and **clobbers** the
+            # PEFT config (strips ``peft_type``), so any PEFT reader then blew
+            # up with ``KeyError: 'peft_type'`` at ``PeftConfig._get_peft_type``.
+            # Legacy callers that still need the gliner2-native directory
+            # shape can invoke ``save_lora_adapter`` directly on a
+            # checkpoint dir after training — the shim is preserved with
+            # ``PendingDeprecationWarning`` in ``gliner2/training/lora.py``.
+            self.model.save_pretrained(str(checkpoint_dir))
             checkpoint_type = "adapter"
             trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         else:
@@ -1345,44 +1345,26 @@ class GLiNER2Trainer:
             logger.info(f"Removed old checkpoint: {oldest.name}")
 
     def load_checkpoint(self, checkpoint_path: str):
-        """
-        Load model weights from a checkpoint.
-        
-        Handles both adapter-only and full checkpoints.
-        Note: Training always starts fresh (no optimizer/scheduler state loaded).
-        """
-        from gliner2.training.lora import LoRAAdapterConfig
-        
+        """Load model weights from a checkpoint (adapter-only or full)."""
         checkpoint_dir = Path(checkpoint_path)
-        
-        if LoRAAdapterConfig.is_adapter_path(checkpoint_path):
-            # Adapter checkpoint - load adapter onto existing model
-            logger.info(f"Loading LoRA adapter from {checkpoint_path}")
-            self.model.load_adapter(checkpoint_path)
-            self.lora_layers = self.model._lora_layers
+        is_adapter = (checkpoint_dir / "adapter_config.json").exists()
+
+        if is_adapter:
+            logger.info("Loading LoRA adapter from %s", checkpoint_path)
+            base = self.model.get_base_model() if isinstance(self.model, PeftModel) else self.model
+            self.model = PeftModel.from_pretrained(base, str(checkpoint_dir))
+            self.model.to(self.device)
+            self.lora_layers = {n: m for n, m in self.model.named_modules() if isinstance(m, _PeftLoraLayer)}
+            self.model._lora_layers = self.lora_layers
         else:
-            # Full model checkpoint
-            lora_config_path = checkpoint_dir / "lora_config.json"
-            if lora_config_path.exists():
-                import json
-                with open(lora_config_path) as f:
-                    lora_config = json.load(f)
-                logger.info(
-                    f"Checkpoint has LoRA config (r={lora_config.get('lora_r')}, "
-                    f"alpha={lora_config.get('lora_alpha')}, merged weights)"
-                )
-            
-            # Load model (with merged weights if it was trained with LoRA)
             self.model = self.model.__class__.from_pretrained(str(checkpoint_dir))
             self.model.to(self.device)
-            
-            # Re-apply LoRA if enabled in current config
             if self.config.use_lora:
                 logger.info("Applying LoRA to loaded model...")
                 self.lora_layers = {}
                 self._setup_lora()
-        
-        logger.info(f"✓ Loaded checkpoint: {checkpoint_path}")
+
+        logger.info("Loaded checkpoint: %s", checkpoint_path)
 
 
 # =============================================================================
