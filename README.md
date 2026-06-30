@@ -113,6 +113,7 @@ Comprehensive guides for all GLiNER2 features:
 - **[Regex Validators](tutorial/5-validator.md)** - Filter and validate extracted spans
 - **[Relation Extraction](tutorial/6-relation_extraction.md)** - Extract relationships between entities
 - **[API Access](tutorial/7-api.md)** - Use GLiNER2 via cloud API
+- **[Long-Context Extraction](tutorial/12-long_context.md)** - Scan long documents with overlapping chunks and global spans
 
 ### Training & Customization
 - **[Training Data Format](tutorial/8-train_data.md)** - Complete guide to preparing training data
@@ -189,6 +190,33 @@ entities = extractor.extract_entities(
 #     }
 # }
 ```
+
+### Long-Document Extraction
+Use the explicit long-document APIs when input text is longer than the model's
+normal context window. GLiNER2 scans overlapping word chunks, remaps chunk-local
+spans back to the original document, and merges duplicate detections from the
+overlap.
+
+```python
+long_text = open("annual_report.txt").read()
+
+result = extractor.extract_entities_long(
+    long_text,
+    ["company", "person", "product", "location"],
+    chunk_size=384,
+    chunk_overlap=64,
+    include_spans=True,
+    include_confidence=True,
+)
+
+# Spans are global offsets into long_text.
+for company in result["entities"].get("company", []):
+    assert long_text[company["start"]:company["end"]] == company["text"]
+```
+
+For multiple documents, use `batch_extract_entities_long(...)` or the generic
+`batch_extract_long(...)` with a schema. Increase `chunk_overlap` when important
+entities or relations may appear near chunk boundaries.
 
 ### 2. Text Classification
 Single or multi-label classification with configurable confidence:

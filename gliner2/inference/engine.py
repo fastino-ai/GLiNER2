@@ -40,6 +40,7 @@ from torch.utils.data import DataLoader
 
 from gliner2.model import Extractor
 from gliner2.processor import PreprocessedBatch
+from gliner2.inference.chunking import merge_chunk_results, split_text_into_chunks
 from gliner2.training.trainer import ExtractorCollator
 
 if TYPE_CHECKING:
@@ -935,12 +936,140 @@ class GLiNER2(Extractor):
         """Extract from single text."""
         return self.batch_extract([text], schema, 1, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)[0]
 
+    def extract_long(
+        self,
+        text: str,
+        schema,
+        threshold: float = 0.5,
+        chunk_size: int = 384,
+        chunk_overlap: int = 64,
+        batch_size: int = 8,
+        num_workers: int = 0,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> Dict:
+        """Extract from a long document with overlapping word chunks."""
+        return self.batch_extract_long(
+            [text],
+            schema,
+            batch_size=batch_size,
+            threshold=threshold,
+            num_workers=num_workers,
+            format_results=format_results,
+            include_confidence=include_confidence,
+            include_spans=include_spans,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )[0]
+
+    def batch_extract_long(
+        self,
+        texts: List[str],
+        schemas: Union[Schema, List[Schema], Dict, List[Dict]],
+        batch_size: int = 8,
+        threshold: float = 0.5,
+        num_workers: int = 0,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+        chunk_size: int = 384,
+        chunk_overlap: int = 64,
+    ) -> List[Dict[str, Any]]:
+        """Extract from long documents by scanning overlapping word chunks.
+
+        Chunk-local spans are remapped to document-level character offsets before
+        overlapping detections are merged. Existing ``batch_extract`` semantics
+        remain unchanged; this method is explicit opt-in long-document handling.
+        """
+        if not format_results:
+            raise ValueError("batch_extract_long currently requires format_results=True")
+        if not texts:
+            return []
+
+        if isinstance(schemas, list):
+            if len(schemas) != len(texts):
+                raise ValueError(f"Schema count ({len(schemas)}) != text count ({len(texts)})")
+            schema_list = schemas
+        else:
+            schema_list = [schemas] * len(texts)
+
+        all_chunk_texts: List[str] = []
+        all_chunk_schemas: List[Any] = []
+        doc_chunks = []
+        doc_chunk_counts: List[int] = []
+
+        for text, schema in zip(texts, schema_list):
+            chunks = split_text_into_chunks(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            doc_chunks.append(chunks)
+            doc_chunk_counts.append(len(chunks))
+            for chunk in chunks:
+                all_chunk_texts.append(chunk.text)
+                all_chunk_schemas.append(schema)
+
+        chunk_results = self.batch_extract(
+            all_chunk_texts,
+            all_chunk_schemas,
+            batch_size=batch_size,
+            threshold=threshold,
+            num_workers=num_workers,
+            format_results=True,
+            include_confidence=True,
+            include_spans=True,
+            max_len=chunk_size,
+        )
+
+        merged_results: List[Dict[str, Any]] = []
+        offset = 0
+        for text, chunks, count in zip(texts, doc_chunks, doc_chunk_counts):
+            results_for_doc = chunk_results[offset:offset + count]
+            merged_results.append(
+                merge_chunk_results(
+                    text,
+                    chunks,
+                    results_for_doc,
+                    include_confidence=include_confidence,
+                    include_spans=include_spans,
+                )
+            )
+            offset += count
+
+        return merged_results
+
     def extract_entities(self, text: str, entity_types, threshold: float = 0.5,
                         format_results: bool = True, include_confidence: bool = False,
                         include_spans: bool = False, max_len: Optional[int] = None) -> Dict:
         """Extract entities from text."""
         schema = self.create_schema().entities(entity_types)
         return self.extract(text, schema, threshold, format_results, include_confidence, include_spans, max_len=max_len)
+
+    def extract_entities_long(
+        self,
+        text: str,
+        entity_types,
+        threshold: float = 0.5,
+        chunk_size: int = 384,
+        chunk_overlap: int = 64,
+        batch_size: int = 8,
+        num_workers: int = 0,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+    ) -> Dict:
+        """Extract entities from a long document with overlapping word chunks."""
+        schema = self.create_schema().entities(entity_types)
+        return self.extract_long(
+            text,
+            schema,
+            threshold=threshold,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            format_results=format_results,
+            include_confidence=include_confidence,
+            include_spans=include_spans,
+        )
 
     def batch_extract_entities(self, texts: List[str], entity_types, batch_size: int = 8,
                                threshold: float = 0.5, format_results: bool = True,
@@ -949,6 +1078,34 @@ class GLiNER2(Extractor):
         """Batch extract entities."""
         schema = self.create_schema().entities(entity_types)
         return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)
+
+    def batch_extract_entities_long(
+        self,
+        texts: List[str],
+        entity_types,
+        batch_size: int = 8,
+        threshold: float = 0.5,
+        num_workers: int = 0,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+        chunk_size: int = 384,
+        chunk_overlap: int = 64,
+    ) -> List[Dict]:
+        """Batch extract entities from long documents with overlapping word chunks."""
+        schema = self.create_schema().entities(entity_types)
+        return self.batch_extract_long(
+            texts,
+            schema,
+            batch_size=batch_size,
+            threshold=threshold,
+            num_workers=num_workers,
+            format_results=format_results,
+            include_confidence=include_confidence,
+            include_spans=include_spans,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
 
     def classify_text(self, text: str, tasks: Dict, threshold: float = 0.5,
                      format_results: bool = True, include_confidence: bool = False,
