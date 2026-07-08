@@ -57,6 +57,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
+import torch.distributed as dist
 from tqdm.auto import tqdm
 
 from gliner2.processor import SchemaTransformer, SamplingConfig
@@ -547,6 +548,8 @@ class GLiNER2Trainer:
         self.lora_layers = {}
         self._setup_lora()
 
+        self._setup_distributed()
+
     def _setup_seed(self):
         seed = self.config.seed
         random.seed(seed)
@@ -564,6 +567,9 @@ class GLiNER2Trainer:
             torch.cuda.set_device(self.config.local_rank)
             self.device = torch.device("cuda", self.config.local_rank)
             self.is_distributed = True
+            if not dist.is_initialized():
+                dist.init_process_group(backend="nccl", init_method="env://")
+                logger.info(f"Initialized distributed training: rank {dist.get_rank()}/{dist.get_world_size()}")
         elif torch.cuda.is_available():
             self.device = torch.device("cuda")
             self.is_distributed = False
@@ -635,9 +641,27 @@ class GLiNER2Trainer:
         pct = (lora_params / total_params * 100) if total_params > 0 else 0.0
         logger.info(f"LoRA setup complete: {lora_params:,} trainable / {total_params:,} total ({pct:.2f}%)")
 
+    def _setup_distributed(self):
+        """Setup distributed training if enabled."""
+        if self.is_distributed:
+            self.model = torch.nn.parallel.DistributedDataParallel(
+                self.model,
+                device_ids=[self.config.local_rank],
+                output_device=self.config.local_rank,
+                find_unused_parameters=True,
+            )
+            logger.info("Wrapped model in DistributedDataParallel")
+
+    def _cleanup_distributed(self):
+        if self.is_distributed and dist.is_initialized():
+            dist.destroy_process_group()
+        if self.is_distributed and hasattr(self.model, "module"):
+            self.model = self.model.module
+        self.is_distributed = False
+
     @property
     def is_main_process(self) -> bool:
-        return self.config.local_rank <= 0
+        return not self.is_distributed or dist.get_rank() == 0
 
     @staticmethod
     def _safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
@@ -645,7 +669,12 @@ class GLiNER2Trainer:
         if denominator == 0:
             return default
         return numerator / denominator
-    
+
+    def _get_model_config(self) -> Any:
+        """Return the underlying model config, handling DDP-wrapped models."""
+        base_model = self.model.module if self.is_distributed and hasattr(self.model, "module") else self.model
+        return getattr(base_model, "config", None)
+
     def _validate_training_setup(self, train_dataset: ExtractorDataset, eval_dataset: Optional[ExtractorDataset]):
         """Validate training setup and raise informative errors for edge cases."""
         # Check if dataset is empty
@@ -773,7 +802,8 @@ class GLiNER2Trainer:
             sampler = DistributedSampler(dataset, shuffle=shuffle)
             shuffle = False
 
-        max_len = self.config.max_len or getattr(self.model.config, "max_len", None)
+        model_config = self._get_model_config()
+        max_len = self.config.max_len or getattr(model_config, "max_len", None)
         collator = ExtractorCollator(self.processor, is_training=is_training, max_len=max_len)
 
         # Fix Bug #1 & #9: Handle small datasets
@@ -1050,6 +1080,9 @@ class GLiNER2Trainer:
                 wandb.finish()
 
         total_time = time.time() - start_time
+
+        self._cleanup_distributed()
+
         return {
             "total_steps": self.global_step,
             "total_epochs": self.epoch + 1,
@@ -1229,12 +1262,37 @@ class GLiNER2Trainer:
             checkpoint_type = "adapter"
             trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         else:
-            if self.config.use_lora and isinstance(self.model, PeftModel):
-                self.model.merge_adapter()
-                self.model.get_base_model().save_pretrained(str(checkpoint_dir))
-                self.model.unmerge_adapter()
-            else:
-                self.model.save_pretrained(str(checkpoint_dir))
+            # Full model save: merge LoRA weights if present
+            lora_was_merged = False
+            if self.config.use_lora and self.lora_layers:
+                first_lora_layer = next(iter(self.lora_layers.values()))
+                if not first_lora_layer.merged:
+                    num_merged = merge_lora_weights(self.model)
+                    lora_was_merged = True
+
+            # Save the model (with merged weights if LoRA was used)
+            model = self.model.module if self.is_distributed else self.model
+            model.save_pretrained(str(checkpoint_dir))
+            
+            # Unmerge weights after saving to continue training with LoRA
+            if lora_was_merged:
+                from gliner2.training.lora import unmerge_lora_weights
+                unmerge_lora_weights(self.model)
+            
+            # Save LoRA configuration if used
+            if self.config.use_lora:
+                lora_config_dict = {
+                    "use_lora": True,
+                    "lora_r": self.config.lora_r,
+                    "lora_alpha": self.config.lora_alpha,
+                    "lora_dropout": self.config.lora_dropout,
+                    "lora_target_modules": self.config.lora_target_modules,
+                    "merged": True,
+                }
+                import json
+                with open(checkpoint_dir / "lora_config.json", "w") as f:
+                    json.dump(lora_config_dict, f, indent=2)
+            
             checkpoint_type = "full"
             trainable_params = sum(p.numel() for p in self.model.parameters())
         
