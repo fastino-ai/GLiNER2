@@ -1,9 +1,3 @@
-<div align="center">
-  <a href="https://pioneer.ai/gliner" target="_blank" rel="noopener noreferrer">
-    <img src="image/GitHub.png" alt="Pioneer AI - Fine-tune GLiNER with a single prompt" width="100%"/>
-  </a>
-</div>
-
 # GLiNER2: Unified Schema-Based Information Extraction and Text Classification
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
