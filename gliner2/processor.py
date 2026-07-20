@@ -8,9 +8,10 @@ via DataLoader collate functions for parallel preprocessing.
 import copy
 import random
 import re
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Dict, Tuple, Iterator, List, Optional
+from typing import Any, Dict, Literal, Tuple, Iterator, List, Optional
 import torch
 from transformers import AutoTokenizer
 
@@ -144,7 +145,15 @@ class PreprocessedBatch:
 # Tokenizer
 # =============================================================================
 
-class WhitespaceTokenSplitter:
+class TokenSplitter(ABC):
+    """Abstract base class for token splitters."""
+
+    @abstractmethod
+    def __call__(self, text: str, lower: bool = True) -> Iterator[Tuple[str, int, int]]:
+        raise NotImplementedError("Subclasses must implement __call__ method.")
+
+
+class WhitespaceTokenSplitter(TokenSplitter):
     """Fast regex-based tokenizer for text splitting."""
     __slots__ = ()
 
@@ -162,6 +171,43 @@ class WhitespaceTokenSplitter:
             text = text.lower()
         for m in self._PATTERN.finditer(text):
             yield m.group(), m.start(), m.end()
+
+
+class JapaneseTokenSplitter(TokenSplitter):
+    """Morphological tokenizer for Japanese text splitting."""
+
+    def __init__(
+        self,
+        dict_type: Literal["small", "core", "full"] = "core",
+        split_mode: Literal["A", "B", "C"] = "C",
+    ) -> None:
+        from sudachipy import Dictionary
+        self._tokenizer = Dictionary(dict=dict_type).create(mode=split_mode)
+
+    def __call__(self, text: str, lower: bool = True) -> Iterator[Tuple[str, int, int]]:
+        if lower:
+            text = text.lower()
+        for m in self._tokenizer.tokenize(text):
+            surface = m.surface()
+            if not surface.strip():
+                # Skip whitespace tokens to mirror the regex splitter.
+                continue
+
+            yield surface, m.begin(), m.end()
+
+
+def get_token_splitter(**kwargs) -> TokenSplitter:
+    """Get a token splitter based on the language (as ISO 639-1 code)."""
+
+    language = str(kwargs.get("language", "")).lower()
+
+    if language == "ja":
+        return JapaneseTokenSplitter(
+            dict_type=kwargs.get("ja_dict_type", "core"),
+            split_mode=kwargs.get("ja_split_mode", "C"),
+        )
+
+    return WhitespaceTokenSplitter()
 
 
 # =============================================================================
@@ -226,14 +272,15 @@ class SchemaTransformer:
             model_name: str = None,
             tokenizer=None,
             sampling_config: SamplingConfig = None,
-            token_pooling: str = "first"
+            token_pooling: str = "first",
+            **kwargs,
     ):
         if model_name is None and tokenizer is None:
             raise ValueError("Either model_name or tokenizer must be provided.")
 
         self.token_pooling = token_pooling if token_pooling in ["first", "mean", "max"] else "first"
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
-        self.word_splitter = WhitespaceTokenSplitter()
+        self.word_splitter = get_token_splitter(**kwargs)
         self.sampling_config = sampling_config or SamplingConfig()
         self.is_training = False
 

@@ -43,6 +43,18 @@ local = [
     "transformers",
     "peft",
 ]
+ja = [
+    "sudachidict-core>=20260428",
+    "sudachipy>=0.6.11",
+]
+ja-small = [
+    "sudachidict-small>=20260428",
+    "sudachipy>=0.6.11",
+]
+ja-full = [
+    "sudachidict-full>=20260428",
+    "sudachipy>=0.6.11",
+]
 
 [project.urls]
 Homepage = "https://github.com/fastino-ai/GLiNER2"

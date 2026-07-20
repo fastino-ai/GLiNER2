@@ -95,3 +95,6 @@ Thumbs.db
 *.log
 
 test_api_client.py
+
+# uv
+uv.lock
