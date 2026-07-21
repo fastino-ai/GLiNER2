@@ -179,7 +179,7 @@ class ChineseTokenSplitter(TokenSplitter):
     def __init__(self) -> None:
         # Suppress jieba regex syntax warning.
         import warnings
-        warnings.filterwarnings("ignore", category=SyntaxWarning, module="jieba")
+        warnings.filterwarnings("ignore", category=SyntaxWarning)
 
         # Suppress jieba logging to avoid cluttering output.
         import logging
