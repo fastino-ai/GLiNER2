@@ -158,10 +158,14 @@ class WhitespaceTokenSplitter:
     )
 
     def __call__(self, text: str, lower: bool = True) -> Iterator[Tuple[str, int, int]]:
-        if lower:
-            text = text.lower()
+        # Match against the original text (the pattern is already case-insensitive)
+        # so offsets index the caller's string, then lower-case only the token
+        # value. Lower-casing the text first is unsafe because Unicode case
+        # folding can change length (e.g. "İ".lower() -> "i\u0307"), which would
+        # corrupt the recorded start/end offsets.
         for m in self._PATTERN.finditer(text):
-            yield m.group(), m.start(), m.end()
+            token = m.group()
+            yield (token.lower() if lower else token), m.start(), m.end()
 
 
 # =============================================================================
