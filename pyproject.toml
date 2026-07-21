@@ -44,16 +44,16 @@ local = [
     "peft",
 ]
 ja = [
-    "sudachidict-core>=20260428",
-    "sudachipy>=0.6.11",
+    "sudachidict-core",
+    "sudachipy",
 ]
 ja-small = [
-    "sudachidict-small>=20260428",
-    "sudachipy>=0.6.11",
+    "sudachidict-small",
+    "sudachipy",
 ]
 ja-full = [
-    "sudachidict-full>=20260428",
-    "sudachipy>=0.6.11",
+    "sudachidict-full",
+    "sudachipy",
 ]
 
 [project.urls]
