@@ -223,6 +223,30 @@ class JapaneseTokenSplitter(TokenSplitter):
             yield surface, m.begin(), m.end()
 
 
+class KoreanTokenSplitter(TokenSplitter):
+    """Morphological tokenizer for Korean text splitting."""
+
+    def __init__(self) -> None:
+        from kiwipiepy import Kiwi
+        self._tokenizer = Kiwi()
+
+    def __call__(self, text: str, lower: bool = True) -> Iterator[Tuple[str, int, int]]:
+        from kiwipiepy import Token
+
+        if lower:
+            text = text.lower()
+        for m in self._tokenizer.tokenize(text):
+            if not isinstance(m, Token):
+                # Skip non-Token results (e.g. list[Token], list[list[Token]]).
+                continue
+
+            if not m.form.strip():
+                # Skip whitespace tokens to mirror the regex splitter.
+                continue
+
+            yield m.form, m.start, m.end
+
+
 def resolve_token_splitter(**kwargs) -> TokenSplitter:
     """Resolve a token splitter based on the ISO 639-1 language code."""
 
@@ -235,6 +259,8 @@ def resolve_token_splitter(**kwargs) -> TokenSplitter:
             dict_type=kwargs.get("ja_dict_type", "core"),
             split_mode=kwargs.get("ja_split_mode", "C"),
         )
+    elif language == "ko":
+        return KoreanTokenSplitter()
 
     return WhitespaceTokenSplitter()
 

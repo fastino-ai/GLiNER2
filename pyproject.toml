@@ -58,6 +58,9 @@ ja-full = [
 zh = [
     "jieba",
 ]
+ko = [
+    "kiwipiepy",
+]
 
 [project.urls]
 Homepage = "https://github.com/fastino-ai/GLiNER2"
