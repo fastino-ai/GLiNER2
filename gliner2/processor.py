@@ -177,12 +177,13 @@ class ChineseTokenSplitter(TokenSplitter):
     """Morphological tokenizer for Chinese text splitting."""
 
     def __init__(self) -> None:
-        import logging
+        # Suppress jieba regex syntax warning.
         import warnings
-        import jieba
+        warnings.filterwarnings("ignore", category=SyntaxWarning, module="jieba")
 
         # Suppress jieba logging to avoid cluttering output.
-        warnings.filterwarnings("ignore", category=SyntaxWarning, module="jieba")
+        import logging
+        import jieba
         jieba.setLogLevel(logging.WARNING)
 
         self._tokenizer = jieba.Tokenizer()
