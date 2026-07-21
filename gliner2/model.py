@@ -684,12 +684,12 @@ class Extractor(PreTrainedModel):
                 with ``dynamic=True`` for fused GPU kernels.
             map_location: Device to load the model onto (e.g. "cpu", "cuda").
             language: ISO 639-1 language code for text splitting.
-                When "ja", "zh" and "ko" use language-specific tokenizers
+                If "ja", "zh", "ko", use language-specific tokenizers
                 because whitespace splitting is insufficient.
             ja_dict_type: For Japanese, specify the dictionary type
-                for text splitting (e.g., "small", "core", "full").
+                for text splitting (e.g., "small", "core", "full". Default is "core").
             ja_split_mode: For Japanese, specify the split mode
-                for text splitting (e.g., "A", "B", "C").
+                for text splitting (e.g., "A", "B", "C". Default is "C").
             **kwargs: Additional keyword arguments.
 
         To use a LoRA adapter:
