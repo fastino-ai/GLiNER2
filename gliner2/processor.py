@@ -228,7 +228,7 @@ class KoreanTokenSplitter(TokenSplitter):
 
     def __init__(self) -> None:
         from kiwipiepy import Kiwi
-        self._tokenizer = Kiwi()
+        self._tokenizer = Kiwi(load_multi_dict=False)
 
     def __call__(self, text: str, lower: bool = True) -> Iterator[Tuple[str, int, int]]:
         from kiwipiepy import Token
