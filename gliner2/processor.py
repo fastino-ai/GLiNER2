@@ -173,6 +173,29 @@ class WhitespaceTokenSplitter(TokenSplitter):
             yield m.group(), m.start(), m.end()
 
 
+class ChineseTokenSplitter(TokenSplitter):
+    """Morphological tokenizer for Chinese text splitting."""
+
+    def __init__(self) -> None:
+        import logging
+        import jieba
+
+        # Suppress jieba logging to avoid cluttering output.
+        jieba.setLogLevel(logging.WARNING)
+        self._tokenizer = jieba.Tokenizer()
+
+    def __call__(self, text: str, lower: bool = True) -> Iterator[Tuple[str, int, int]]:
+        if lower:
+            text = text.lower()
+        for m in self._tokenizer.tokenize(text):
+            surface = str(m[0])
+            if not surface.strip():
+                # Skip whitespace tokens to mirror the regex splitter.
+                continue
+
+            yield surface, int(m[1]), int(m[2])
+        
+
 class JapaneseTokenSplitter(TokenSplitter):
     """Morphological tokenizer for Japanese text splitting."""
 
@@ -201,7 +224,9 @@ def resolve_token_splitter(**kwargs) -> TokenSplitter:
 
     language = str(kwargs.get("language", "")).lower()
 
-    if language == "ja":
+    if language == "zh":
+        return ChineseTokenSplitter()
+    elif language == "ja":
         return JapaneseTokenSplitter(
             dict_type=kwargs.get("ja_dict_type", "core"),
             split_mode=kwargs.get("ja_split_mode", "C"),

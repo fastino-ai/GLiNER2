@@ -55,6 +55,9 @@ ja-full = [
     "sudachidict-full",
     "sudachipy",
 ]
+zh = [
+    "jieba",
+]
 
 [project.urls]
 Homepage = "https://github.com/fastino-ai/GLiNER2"
