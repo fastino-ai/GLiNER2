@@ -178,10 +178,13 @@ class ChineseTokenSplitter(TokenSplitter):
 
     def __init__(self) -> None:
         import logging
+        import warnings
         import jieba
 
         # Suppress jieba logging to avoid cluttering output.
-        jieba.setLogLevel(logging.ERROR)
+        warnings.filterwarnings("ignore", category=SyntaxWarning, module="jieba")
+        jieba.setLogLevel(logging.WARNING)
+
         self._tokenizer = jieba.Tokenizer()
 
     def __call__(self, text: str, lower: bool = True) -> Iterator[Tuple[str, int, int]]:
