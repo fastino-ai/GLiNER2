@@ -1,4 +1,4 @@
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 
 from .inference.schema import Schema, StructureBuilder, RegexValidator
 from .inference.schema_model import (
@@ -16,9 +16,11 @@ from .api_client import (
 )
 
 _LAZY = {
-    "GLiNER2":              ("gliner2.inference.engine", "GLiNER2"),
-    "Extractor":            ("gliner2.model",            "Extractor"),
-    "ExtractorConfig":      ("gliner2.model",            "ExtractorConfig"),
+    "GLiNER2":                  ("gliner2.inference.engine",          "GLiNER2"),
+    "Extractor":                ("gliner2.model",                     "Extractor"),
+    "ExtractorConfig":          ("gliner2.model",                     "ExtractorConfig"),
+    "EntityAttributeGLiNER2":   ("gliner2.inference.attribute_engine", "EntityAttributeGLiNER2"),
+    "AttributeGroup":           ("gliner2.inference.attribute_engine", "AttributeGroup"),
     "LoRAConfig":           ("gliner2.training.lora",    "LoRAConfig"),
     "LoRAAdapterConfig":    ("gliner2.training.lora",    "LoRAAdapterConfig"),
     "LoRALayer":            ("gliner2.training.lora",    "LoRALayer"),

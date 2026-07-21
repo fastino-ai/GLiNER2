@@ -35,9 +35,14 @@ class TextChunk:
 
 
 def iter_word_offsets(text: str) -> Iterable[Tuple[str, int, int]]:
-    """Yield regex word tokens and character offsets using processor-compatible rules."""
-    lowered = text.lower()
-    for match in _WORD_PATTERN.finditer(lowered):
+    """Yield regex word tokens and character offsets using processor-compatible rules.
+
+    The regex is matched against the original text (it is already case-insensitive)
+    so that the reported offsets index the caller's string. Lower-casing before
+    matching is unsafe because Unicode case folding can change string length
+    (e.g. ``"İ".lower()`` expands to two code points), which would shift offsets.
+    """
+    for match in _WORD_PATTERN.finditer(text):
         yield match.group(), match.start(), match.end()
 
 
@@ -113,20 +118,30 @@ def merge_chunk_results(
     chunk_results: List[Dict[str, Any]],
     include_confidence: bool = False,
     include_spans: bool = False,
+    scalar_entity_labels: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
-    """Merge formatted extraction results from one document's chunks."""
+    """Merge formatted extraction results from one document's chunks.
+
+    ``scalar_entity_labels`` names entity types declared with a non-list dtype;
+    those are collapsed to a single best value (mirroring the base API) instead
+    of being returned as a list.
+    """
     if len(chunks) != len(chunk_results):
         raise ValueError("chunks and chunk_results must have the same length")
 
+    scalar_labels = set(scalar_entity_labels or ())
     remapped_results = [
         remap_result_spans(result, original_text, chunk)
         for chunk, result in zip(chunks, chunk_results)
     ]
-    merged = _merge_result_dicts(remapped_results)
+    merged = _merge_result_dicts(remapped_results, scalar_labels)
     return _strip_span_metadata(merged, include_confidence, include_spans)
 
 
-def _merge_result_dicts(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _merge_result_dicts(
+    results: List[Dict[str, Any]],
+    scalar_entity_labels: Optional[set] = None,
+) -> Dict[str, Any]:
     merged: Dict[str, Any] = {}
     keys = []
     seen = set()
@@ -139,7 +154,7 @@ def _merge_result_dicts(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     for key in keys:
         values = [result.get(key) for result in results if key in result]
         if key == "entities":
-            merged[key] = _merge_entity_maps(values)
+            merged[key] = _merge_entity_maps(values, scalar_entity_labels or set())
         elif key == "relation_extraction":
             merged[key] = _merge_relation_maps(values)
         else:
@@ -148,7 +163,7 @@ def _merge_result_dicts(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     return merged
 
 
-def _merge_entity_maps(values: List[Any]) -> Dict[str, Any]:
+def _merge_entity_maps(values: List[Any], scalar_labels: set) -> Dict[str, Any]:
     merged: Dict[str, Any] = {}
     labels = []
     seen = set()
@@ -165,7 +180,13 @@ def _merge_entity_maps(values: List[Any]) -> Dict[str, Any]:
         for value in values:
             if isinstance(value, dict) and label in value:
                 items.extend(_as_list(value[label]))
-        merged[label] = _dedupe_items(items, remove_overlaps=True)
+        deduped = _dedupe_items(items, remove_overlaps=True)
+        if label in scalar_labels:
+            # A non-list entity dtype yields a single best value (or None),
+            # matching the base engine's scalar contract.
+            merged[label] = deduped[0] if deduped else None
+        else:
+            merged[label] = deduped
 
     return merged
 
@@ -250,14 +271,27 @@ def _dedupe_items(items: List[Any], remove_overlaps: bool) -> List[Any]:
             selected.append(item)
         deduped.extend(sorted(selected, key=lambda item: (item["start"], item["end"], item.get("text", ""))))
 
-    seen_other = set()
+    # Non-span items (relations, structure instances, classification dicts) are
+    # deduplicated on a confidence-insensitive canonical key so that the same
+    # prediction seen in two overlapping chunks with slightly different scores is
+    # collapsed. When a duplicate is found, the higher-confidence one is kept.
+    seen_other: Dict[str, int] = {}
+    other_deduped: List[Any] = []
     for item in other_items:
         key = _canonical_key(item)
         if key not in seen_other:
-            seen_other.add(key)
-            deduped.append(item)
+            seen_other[key] = len(other_deduped)
+            other_deduped.append(item)
+        else:
+            idx = seen_other[key]
+            if _representative_confidence(item) > _representative_confidence(other_deduped[idx]):
+                other_deduped[idx] = item
+    deduped.extend(other_deduped)
 
     return deduped
+
+
+_SPAN_RESERVED = frozenset({"text", "confidence", "start", "end"})
 
 
 def _strip_span_metadata(value: Any, include_confidence: bool, include_spans: bool) -> Any:
@@ -266,15 +300,35 @@ def _strip_span_metadata(value: Any, include_confidence: bool, include_spans: bo
 
     if isinstance(value, dict):
         if _is_span_dict(value):
-            if not include_confidence and not include_spans:
+            # Entity spans may carry extra attribute-group payloads (e.g.
+            # ``{"text": ..., "sentiment": {...}}``). Those extra keys must be
+            # preserved verbatim to match the non-long attribute API, which keeps
+            # attribute payloads regardless of the confidence/span flags.
+            extras = {k: v for k, v in value.items() if k not in _SPAN_RESERVED}
+            if not include_confidence and not include_spans and not extras:
                 return value.get("text", "")
-            stripped = {"text": value.get("text", "")}
+            stripped: Dict[str, Any] = {"text": value.get("text", "")}
             if include_confidence and "confidence" in value:
                 stripped["confidence"] = value["confidence"]
             if include_spans:
                 stripped["start"] = value["start"]
                 stripped["end"] = value["end"]
+            stripped.update(extras)
             return stripped
+
+        # Classification results, e.g. ``{"label": "positive", "confidence": ...}``.
+        if _is_classification_dict(value):
+            if include_confidence:
+                return {"label": value["label"], "confidence": value["confidence"]}
+            return value["label"]
+
+        # Enum/choice structure fields, e.g. ``{"text": "outdoor", "confidence": ...}``
+        # (a text/confidence pair with no character offsets).
+        if "text" in value and "confidence" in value and "start" not in value and "end" not in value:
+            if include_confidence:
+                return {"text": value["text"], "confidence": value["confidence"]}
+            return value["text"]
+
         return {
             key: _strip_span_metadata(item, include_confidence, include_spans)
             for key, item in value.items()
@@ -316,7 +370,27 @@ def _spans_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
 
 def _canonical_key(value: Any) -> str:
     if isinstance(value, dict):
-        return repr(sorted((key, _canonical_key(item)) for key, item in value.items()))
+        return repr(
+            sorted(
+                (key, _canonical_key(item))
+                for key, item in value.items()
+                if key != "confidence"
+            )
+        )
     if isinstance(value, list):
         return repr([_canonical_key(item) for item in value])
     return repr(value)
+
+
+def _representative_confidence(value: Any) -> float:
+    """Best-effort confidence for a possibly-nested prediction, used to pick the
+    survivor when duplicate predictions are merged across overlapping chunks."""
+    if isinstance(value, dict):
+        if isinstance(value.get("confidence"), (int, float)):
+            return float(value["confidence"])
+        nested = [_representative_confidence(v) for v in value.values()]
+        return max(nested) if nested else 0.0
+    if isinstance(value, list):
+        nested = [_representative_confidence(v) for v in value]
+        return max(nested) if nested else 0.0
+    return 0.0

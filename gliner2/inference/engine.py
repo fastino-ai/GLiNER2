@@ -161,9 +161,18 @@ class GLiNER2(Extractor):
                     "classification_tasks": classification_tasks
                 }
 
-            # Ensure classifications have true_label
-            for cls_config in schema_dict.get("classifications", []):
-                cls_config.setdefault("true_label", ["N/A"])
+            # Ensure classifications have true_label without mutating a
+            # caller-owned dict schema in place. Only rebuild the configs that
+            # are missing the key, and only replace schema_dict if needed.
+            classifications = schema_dict.get("classifications")
+            if classifications and any("true_label" not in c for c in classifications):
+                schema_dict = {
+                    **schema_dict,
+                    "classifications": [
+                        c if "true_label" in c else {**c, "true_label": ["N/A"]}
+                        for c in classifications
+                    ],
+                }
 
             schema_dicts.append(schema_dict)
             metadata_list.append(metadata)
@@ -337,6 +346,36 @@ class GLiNER2(Extractor):
 
         return results
 
+    @staticmethod
+    def _resolve_classification_config(
+        prompt_str: str,
+        classifications: List[Dict]
+    ) -> Optional[Dict]:
+        """Find the classification config that owns ``prompt_str``.
+
+        A config matches when ``prompt_str`` equals its task name or is followed
+        by a word/prompt boundary (end of string, ``":"`` for a prompt, or a
+        space before description/example decorations). The longest matching task
+        wins so that prefixes like "sent" cannot shadow "sentiment".
+        """
+        best = None
+        for config in classifications:
+            task = config.get("task", "")
+            if not task or not prompt_str.startswith(task):
+                continue
+            rest = prompt_str[len(task):]
+            if rest == "" or rest[0] in (":", " "):
+                if best is None or len(task) > len(best.get("task", "")):
+                    best = config
+        if best is None:
+            # Fall back to the original loose prefix match to avoid crashing on
+            # unexpected decorations rather than returning nothing.
+            best = next(
+                (c for c in classifications if prompt_str.startswith(c.get("task", ""))),
+                None,
+            )
+        return best
+
     def _extract_classification_result(
         self,
         results: Dict,
@@ -346,10 +385,16 @@ class GLiNER2(Extractor):
         schema_tokens: List[str]
     ):
         """Extract classification result."""
-        cls_config = next(
-            c for c in schema["classifications"]
-            if schema_tokens[2].startswith(c["task"])
-        )
+        # ``schema_tokens[2]`` is the prompt string, which may be decorated as
+        # "<task>", "<task>: <prompt>" and/or followed by description/example
+        # tokens. Resolve the owning task by boundary-aware longest match so that
+        # tasks sharing a prefix (e.g. "sent" vs "sentiment") are never confused,
+        # and key the result by the exact task name so prompts don't leak into it.
+        prompt_str = schema_tokens[2]
+        cls_config = self._resolve_classification_config(prompt_str, schema.get("classifications", []))
+        if cls_config is None:
+            return
+        schema_name = cls_config["task"]
 
         cls_embeds = embs[1:]
         logits = self.classifier(cls_embeds).squeeze(-1)
@@ -759,10 +804,17 @@ class GLiNER2(Extractor):
             return [s[0] for s in selected]
 
     def _find_choice_idx(self, choice: str, tokens: List[str]) -> int:
-        """Find index of choice in tokens."""
+        """Find index of choice in tokens.
+
+        Choices are inserted into the classification prefix verbatim as single
+        tokens, so an exact (case-insensitive) match is correct. The previous
+        substring fallback (``choice_lower in tok.lower()``) is unsafe: a short
+        choice such as "in" would spuriously match a prefix token like "seating"
+        and read the score from the wrong position.
+        """
         choice_lower = choice.lower()
         for i, tok in enumerate(tokens):
-            if tok.lower() == choice_lower or choice_lower in tok.lower():
+            if tok.lower() == choice_lower:
                 return i
         return -1
 
@@ -875,10 +927,17 @@ class GLiNER2(Extractor):
                             seen.add((text.lower(), start, end))
                             unique.append({"text": text, "confidence": conf} if include_confidence else text)
                     elif isinstance(span, dict):
-                        # Handle dict format (with confidence/spans)
+                        # Handle dict format (with confidence/spans). Include the
+                        # character offsets in the dedup key when present so that
+                        # distinct occurrences of the same surface form (e.g.
+                        # "John met John.") are not collapsed into one.
                         text = span.get("text", "")
-                        if text and text.lower() not in seen:
-                            seen.add(text.lower())
+                        if "start" in span and "end" in span:
+                            key = (text.lower(), span["start"], span["end"])
+                        else:
+                            key = (text.lower(), None, None)
+                        if text and key not in seen:
+                            seen.add(key)
                             unique.append(span)
                     else:
                         # Handle string format
@@ -906,10 +965,16 @@ class GLiNER2(Extractor):
                             seen.add((text.lower(), start, end))
                             unique.append({"text": text, "confidence": conf} if include_confidence else text)
                     elif isinstance(v, dict):
-                        # Handle dict format (with confidence/spans)
+                        # Handle dict format (with confidence/spans). Include the
+                        # character offsets in the dedup key when present so that
+                        # distinct occurrences of the same surface form are kept.
                         text = v.get("text", "")
-                        if text and text.lower() not in seen:
-                            seen.add(text.lower())
+                        if "start" in v and "end" in v:
+                            key = (text.lower(), v["start"], v["end"])
+                        else:
+                            key = (text.lower(), None, None)
+                        if text and key not in seen:
+                            seen.add(key)
                             unique.append(v)
                     else:
                         # Handle string format
@@ -1021,7 +1086,7 @@ class GLiNER2(Extractor):
 
         merged_results: List[Dict[str, Any]] = []
         offset = 0
-        for text, chunks, count in zip(texts, doc_chunks, doc_chunk_counts):
+        for text, schema, chunks, count in zip(texts, schema_list, doc_chunks, doc_chunk_counts):
             results_for_doc = chunk_results[offset:offset + count]
             merged_results.append(
                 merge_chunk_results(
@@ -1030,11 +1095,28 @@ class GLiNER2(Extractor):
                     results_for_doc,
                     include_confidence=include_confidence,
                     include_spans=include_spans,
+                    scalar_entity_labels=self._scalar_entity_labels(schema),
                 )
             )
             offset += count
 
         return merged_results
+
+    @staticmethod
+    def _scalar_entity_labels(schema) -> set:
+        """Names of entity types declared with a non-list dtype.
+
+        Only ``Schema`` objects carry this metadata; raw dict schemas don't, so
+        they default to list semantics (an empty set).
+        """
+        entity_metadata = getattr(schema, "_entity_metadata", None)
+        if not isinstance(entity_metadata, dict):
+            return set()
+        return {
+            name
+            for name, meta in entity_metadata.items()
+            if isinstance(meta, dict) and meta.get("dtype", "list") != "list"
+        }
 
     def extract_entities(self, text: str, entity_types, threshold: float = 0.5,
                         format_results: bool = True, include_confidence: bool = False,
