@@ -150,7 +150,7 @@ class TokenSplitter(ABC):
 
     @abstractmethod
     def __call__(self, text: str, lower: bool = True) -> Iterator[Tuple[str, int, int]]:
-        raise NotImplementedError("Subclasses must implement __call__ method.")
+        raise NotImplementedError
 
 
 class WhitespaceTokenSplitter(TokenSplitter):
@@ -196,8 +196,8 @@ class JapaneseTokenSplitter(TokenSplitter):
             yield surface, m.begin(), m.end()
 
 
-def get_token_splitter(**kwargs) -> TokenSplitter:
-    """Get a token splitter based on the language (as ISO 639-1 code)."""
+def resolve_token_splitter(**kwargs) -> TokenSplitter:
+    """Resolve a token splitter based on the ISO 639-1 language code."""
 
     language = str(kwargs.get("language", "")).lower()
 
@@ -280,7 +280,7 @@ class SchemaTransformer:
 
         self.token_pooling = token_pooling if token_pooling in ["first", "mean", "max"] else "first"
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
-        self.word_splitter = get_token_splitter(**kwargs)
+        self.word_splitter = resolve_token_splitter(**kwargs)
         self.sampling_config = sampling_config or SamplingConfig()
         self.is_training = False
 
