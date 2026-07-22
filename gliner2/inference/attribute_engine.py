@@ -14,17 +14,22 @@ Sentiment is just one configuration::
 
     model = EntityAttributeGLiNER2.from_pretrained("repo")
     model.set_attribute_groups({
-        "sentiment": AttributeGroup(["positive", "negative", "neutral"]),
+        "sentiment": AttributeGroup(
+            ["positive", "negative", "neutral"],
+            qualify_labels=True,
+        ),
     })
     # Note: the user does NOT add sentiment labels to the schema.
     schema = model.create_schema().entities(["person", "company", "product"])
     model.extract(text, schema, format_results=False)
 
 Attribute labels are *not* declared in the schema by the user. The engine
-injects them into the entity set automatically at inference time (so the
-model scores them), then consumes them as span attributes instead of
-emitting them as their own entity buckets. Injection only happens for
-schemas that already contain an entity task.
+injects them into the entity set automatically at inference time. Set
+``qualify_labels=True`` on a group to give ambiguous values their attribute
+context in the model-facing schema (for example, ``sentiment: positive``).
+The engine consumes injected labels as span attributes instead of emitting
+them as their own entity buckets. Injection only happens for schemas that
+already contain an entity task.
 
 The engine overrides only the ``entities`` decode path; classifications,
 structures and relations fall through to :class:`GLiNER2` unchanged.
@@ -53,6 +58,25 @@ from gliner2.inference.schema import Schema
 class AttributeGroup:
     """A group of entity-type labels to *assign* to spans, not extract as spans.
 
+    ``qualify_labels`` controls only how labels are presented to the model. For
+    example, the value ``"positive"`` in a group named ``"sentiment"`` is
+    injected as ``"sentiment: positive"`` when qualification is enabled. The
+    decoded result still uses ``{"label": "positive", ...}``, so enabling this
+    option does not change the public result shape.
+
+    Qualification is useful for generic or overloaded values such as
+    ``positive``, ``high``, or ``open``. It defaults to False to preserve the
+    prompts used by existing applications and models.
+
+    Example::
+
+        model.set_attribute_groups({
+            "sentiment": AttributeGroup(
+                ["positive", "negative", "neutral"],
+                qualify_labels=True,
+            ),
+        })
+
     Args:
         labels: Group labels. Mutually exclusive when ``multi_label`` is False.
         multi_label: If False, softmax over labels (forced exactly one). If
@@ -60,12 +84,16 @@ class AttributeGroup:
         threshold: Selection cutoff, only used when ``multi_label`` is True.
         applies_to: Entity types this group annotates. ``None`` means every
             content entity type.
+        qualify_labels: If True, prefix model-facing labels with the group name
+            (for example, ``sentiment: positive``) to reduce ambiguity. Decoded
+            values remain unchanged. Defaults to False for backward compatibility.
     """
 
     labels: List[str]
     multi_label: bool = False
     threshold: float = 0.5
     applies_to: Optional[List[str]] = None
+    qualify_labels: bool = False
 
 
 class EntityAttributeGLiNER2(GLiNER2):
@@ -109,7 +137,14 @@ class EntityAttributeGLiNER2(GLiNER2):
                     )
                 seen[lbl] = gname
         self._attr_groups: Dict[str, AttributeGroup] = groups
-        self._attr_labels: set = set(seen)
+        # Qualification affects only model-facing schema labels; decoded
+        # results continue to expose the original values.
+        self._attr_prompt_labels: Dict[str, str] = {
+            lbl: f"{gname}: {lbl}" if group.qualify_labels else lbl
+            for gname, group in groups.items()
+            for lbl in group.labels
+        }
+        self._attr_labels: set = set(self._attr_prompt_labels.values())
         return self
 
     @property
@@ -272,11 +307,12 @@ class EntityAttributeGLiNER2(GLiNER2):
         # Precompute per-group label -> field-index tensors, dropping labels
         # that are not present in this schema's entity set.
         group_idx: Dict[str, Any] = {}
+        prompt_labels = getattr(self, "_attr_prompt_labels", {})
         for gname, g in self._groups.items():
             present = [
-                (lbl, entity_names.index(lbl))
+                (lbl, entity_names.index(prompt_labels.get(lbl, lbl)))
                 for lbl in g.labels
-                if lbl in entity_names
+                if prompt_labels.get(lbl, lbl) in entity_names
             ]
             if present:
                 labels, idxs = zip(*present)
