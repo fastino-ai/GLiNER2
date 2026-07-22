@@ -1231,7 +1231,7 @@ class GLiNER2(Extractor):
         return self.extract(text, schema, threshold, format_results, include_confidence, include_spans, max_len=max_len)
 
     def batch_extract_json(self, texts: List[str], structures: Dict, batch_size: int = 8,
-                          threshold: float = 0.5, format_results: bool = True,
+                          threshold: float = 0.5, num_workers: int = 0, format_results: bool = True,
                           include_confidence: bool = False, include_spans: bool = False,
                           max_len: Optional[int] = None) -> List[Dict]:
         """Batch extract structured data."""
@@ -1241,7 +1241,7 @@ class GLiNER2(Extractor):
             for spec in fields:
                 name, dtype, choices, desc = self._parse_field_spec(spec)
                 builder.field(name, dtype=dtype, choices=choices, description=desc)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)
+        return self.batch_extract(texts, schema, batch_size, threshold, num_workers, format_results, include_confidence, include_spans, max_len=max_len)
 
     def extract_relations(self, text: str, relation_types, threshold: float = 0.5,
                          format_results: bool = True, include_confidence: bool = False,
