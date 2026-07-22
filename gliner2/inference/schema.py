@@ -52,6 +52,19 @@ class RegexValidator:
         return not matched if self.exclude else matched
 
 
+def _validator_to_dict(validator: "RegexValidator") -> Dict[str, Any]:
+    """Serialize a RegexValidator to the JSON form accepted by from_dict()."""
+    pattern = validator.pattern
+    if isinstance(pattern, re.Pattern):
+        pattern = pattern.pattern
+    return {
+        "pattern": pattern,
+        "mode": validator.mode,
+        "exclude": validator.exclude,
+        "ignore_case": bool(validator.flags & re.IGNORECASE),
+    }
+
+
 # =============================================================================
 # Schema Builder
 # =============================================================================
@@ -305,11 +318,24 @@ class Schema:
             for struct_name, struct_input in validated.structures.items():
                 builder = schema.structure(struct_name)
                 for field_input in struct_input.fields:
+                    validators = None
+                    if field_input.validators is not None:
+                        validators = [
+                            RegexValidator(
+                                pattern=v.pattern,
+                                mode=v.mode,
+                                exclude=v.exclude,
+                                flags=re.IGNORECASE if v.ignore_case else 0,
+                            )
+                            for v in field_input.validators
+                        ]
                     builder.field(
                         name=field_input.name,
                         dtype=field_input.dtype,
                         choices=field_input.choices,
-                        description=field_input.description
+                        description=field_input.description,
+                        threshold=field_input.threshold,
+                        validators=validators,
                     )
                 builder._auto_finish()
 
@@ -318,7 +344,8 @@ class Schema:
                 schema.classification(
                     task=cls_input.task,
                     labels=cls_input.labels,
-                    multi_label=cls_input.multi_label
+                    multi_label=cls_input.multi_label,
+                    cls_threshold=cls_input.cls_threshold,
                 )
 
         if validated.relations is not None:
@@ -402,6 +429,16 @@ class Schema:
                         if desc:
                             field_def["description"] = desc
 
+                        threshold = metadata.get("threshold")
+                        if threshold is not None:
+                            field_def["threshold"] = threshold
+
+                        validators = metadata.get("validators")
+                        if validators:
+                            field_def["validators"] = [
+                                _validator_to_dict(v) for v in validators
+                            ]
+
                         fields.append(field_def)
 
                     result["structures"][struct_name] = {"fields": fields}
@@ -415,6 +452,9 @@ class Schema:
                 }
                 if cls_config.get("multi_label", False):
                     cls_def["multi_label"] = True
+                cls_threshold = cls_config.get("cls_threshold", 0.5)
+                if cls_threshold != 0.5:
+                    cls_def["cls_threshold"] = cls_threshold
                 result["classifications"].append(cls_def)
 
         if self.schema["relations"]:
