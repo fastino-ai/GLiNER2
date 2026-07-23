@@ -38,7 +38,7 @@ Create relation examples:
 
 Build and validate dataset:
     >>> dataset = TrainingDataset(examples)
-    >>> dataset.validate()  # Raises ValidationError if invalid
+    >>> dataset.validate()  # Raises DataValidationError if invalid
     >>> dataset.save("train.jsonl")
 
 Load from JSONL:
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
     pass
 
 
-class ValidationError(Exception):
+class DataValidationError(Exception):
     """Raised when training data validation fails."""
 
     def __init__(self, message: str, errors: List[str] = None):
@@ -997,7 +997,7 @@ class TrainingDataset:
         Parameters
         ----------
         raise_on_error : bool, default=True
-            If True, raises ValidationError when invalid examples are found.
+            If True, raises DataValidationError when invalid examples are found.
             If False, returns validation report without raising.
         
         Returns
@@ -1027,7 +1027,7 @@ class TrainingDataset:
         }
 
         if all_errors and raise_on_error:
-            raise ValidationError(f"Dataset validation failed: {len(invalid_indices)} invalid examples", all_errors)
+            raise DataValidationError(f"Dataset validation failed: {len(invalid_indices)} invalid examples", all_errors)
 
         return report
 

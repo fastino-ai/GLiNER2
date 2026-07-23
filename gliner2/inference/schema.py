@@ -56,6 +56,26 @@ class RegexValidator:
 # Schema Builder
 # =============================================================================
 
+@dataclass
+class AttributeGroup:
+    """Labels assigned as attributes of extracted entity spans.
+
+    Args:
+        labels: Values available in this attribute group.
+        multi_label: Use independent sigmoid decisions instead of forcing one value.
+        threshold: Selection cutoff for multi-label groups.
+        applies_to: Optional entity types to which this group applies.
+        qualify_labels: Prefix model-facing values with the group name to reduce
+            ambiguity, while keeping returned values unqualified.
+    """
+
+    labels: List[str]
+    multi_label: bool = False
+    threshold: float = 0.5
+    applies_to: Optional[List[str]] = None
+    qualify_labels: bool = False
+
+
 class StructureBuilder:
     """Builder for structured data schemas."""
 
@@ -123,6 +143,9 @@ class Schema:
         self._field_orders = {}
         self._entity_order = []
         self._relation_order = []
+        self._entity_attribute_groups: Dict[str, AttributeGroup] = {}
+        self._entity_attribute_prompt_labels: Dict[str, str] = {}
+        self._entity_attribute_labels = set()
         self._active_builder = None
 
     def _store_field_metadata(self, parent, field, dtype, threshold, choices, validators=None):
@@ -202,6 +225,90 @@ class Schema:
             if "description" in config:
                 self.schema["entity_descriptions"][name] = config["description"]
 
+        return self
+
+    def entity_attributes(
+        self, groups: Dict[str, AttributeGroup]
+    ) -> 'Schema':
+        """Attach attribute groups to entities declared by this schema.
+
+        Model-facing attribute labels are added to the internal entity schema, but
+        are excluded from the public entity order and decoded as span attributes.
+        """
+        if self._active_builder:
+            self._active_builder._auto_finish()
+            self._active_builder = None
+        if not self._entity_order:
+            raise ValueError("entity_attributes() requires entities() to be called first")
+
+        groups = groups or {}
+        reserved = {"text", "confidence", "start", "end"}
+        seen: Dict[str, str] = {}
+        content_entities = set(self._entity_order)
+        for group_name, group in groups.items():
+            if not isinstance(group, AttributeGroup):
+                raise TypeError(
+                    f"Attribute group '{group_name}' must be an AttributeGroup"
+                )
+            if not group_name or group_name in reserved:
+                raise ValueError(
+                    f"Invalid attribute group name {group_name!r}: must be non-empty "
+                    f"and not one of {sorted(reserved)}"
+                )
+            if not group.labels:
+                raise ValueError(f"Attribute group '{group_name}' has no labels")
+            if not 0.0 <= group.threshold <= 1.0:
+                raise ValueError(
+                    f"Attribute group '{group_name}' threshold must be in [0, 1], "
+                    f"got {group.threshold}"
+                )
+            if group.applies_to is not None:
+                unknown = set(group.applies_to) - content_entities
+                if unknown:
+                    raise ValueError(
+                        f"Attribute group '{group_name}' applies to unknown entities: "
+                        f"{sorted(unknown)}"
+                    )
+            group_seen = set()
+            for label in group.labels:
+                if not label or not label.strip():
+                    raise ValueError(f"Attribute group '{group_name}' has an empty label")
+                if label in group_seen:
+                    raise ValueError(
+                        f"Label '{label}' is duplicated within group '{group_name}'"
+                    )
+                group_seen.add(label)
+                if label in seen:
+                    raise ValueError(
+                        f"Label '{label}' is in both '{seen[label]}' and '{group_name}'"
+                    )
+                seen[label] = group_name
+
+        prompt_labels = {
+            label: f"{group_name}: {label}" if group.qualify_labels else label
+            for group_name, group in groups.items()
+            for label in group.labels
+        }
+        attribute_labels = set(prompt_labels.values())
+        collisions = attribute_labels & content_entities
+        if collisions:
+            raise ValueError(
+                "Attribute labels collide with entity labels: "
+                f"{sorted(collisions)}; use qualify_labels=True"
+            )
+
+        # Replace prior configuration cleanly when this method is called again.
+        for label in self._entity_attribute_labels:
+            if label not in content_entities:
+                self.schema["entities"].pop(label, None)
+                self._entity_metadata.pop(label, None)
+        for label in sorted(attribute_labels):
+            self.schema["entities"].setdefault(label, "")
+            self._store_entity_metadata(label, "list", None)
+
+        self._entity_attribute_groups = dict(groups)
+        self._entity_attribute_prompt_labels = prompt_labels
+        self._entity_attribute_labels = attribute_labels
         return self
 
     def _parse_entity_input(self, entity_types):
