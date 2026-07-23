@@ -63,7 +63,7 @@ from gliner2.processor import SchemaTransformer, SamplingConfig
 
 # Import training data classes
 from gliner2.training.data import (
-    InputExample, TrainingDataset, ValidationError,
+    InputExample, TrainingDataset, DataValidationError,
     DataFormat, detect_data_format, DataLoader_Factory, TrainDataInput
 )
 

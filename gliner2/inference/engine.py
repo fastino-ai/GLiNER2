@@ -32,7 +32,9 @@ from typing import Any, Dict, List, Optional, Union, Tuple, TYPE_CHECKING, Liter
 # Back-compat re-exports: existing code that does
 #   ``from gliner2.inference.engine import Schema, RegexValidator``
 # continues to work unchanged.
-from gliner2.inference.schema import RegexValidator, StructureBuilder, Schema  # noqa: F401
+from gliner2.inference.schema import (
+    AttributeGroup, RegexValidator, StructureBuilder, Schema
+)  # noqa: F401
 
 import torch
 import torch.nn.functional as F
@@ -42,6 +44,7 @@ from gliner2.model import Extractor
 from gliner2.processor import PreprocessedBatch
 from gliner2.inference.chunking import merge_chunk_results, split_text_into_chunks
 from gliner2.training.trainer import ExtractorCollator
+from gliner2.inference.span_decoder import finalize_spans
 
 if TYPE_CHECKING:
     from gliner2.api_client import GLiNER2API
@@ -57,6 +60,8 @@ class GLiNER2(Extractor):
 
     Provides efficient batch extraction with parallel preprocessing.
     """
+
+    _ENTITY_RESULT_KEYS = frozenset({"text", "confidence", "start", "end"})
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -108,7 +113,6 @@ class GLiNER2(Extractor):
             max_len: Maximum number of word tokens to process per text.
                 Tokens beyond this limit are silently dropped before the model
                 sees the input. ``None`` (default) means no truncation.
-
         Returns:
             List of extraction results
         """
@@ -126,56 +130,7 @@ class GLiNER2(Extractor):
         else:
             schema_list = [schemas] * len(texts)
 
-        # Build schema dicts and metadata
-        schema_dicts = []
-        metadata_list = []
-
-        for schema in schema_list:
-            if hasattr(schema, 'build'):
-                schema_dict = schema.build()
-                # Extract classification task names
-                classification_tasks = [c["task"] for c in schema_dict.get("classifications", [])]
-                metadata = {
-                    "field_metadata": schema._field_metadata,
-                    "entity_metadata": schema._entity_metadata,
-                    "relation_metadata": getattr(schema, '_relation_metadata', {}),
-                    "field_orders": schema._field_orders,
-                    "entity_order": schema._entity_order,
-                    "relation_order": getattr(schema, '_relation_order', []),
-                    "classification_tasks": classification_tasks
-                }
-            else:
-                schema_dict = schema
-                # Normalize shorthand entity lists to dicts
-                # e.g. {'entities': ['person', 'company']} -> {'entities': {'person': '', 'company': ''}}
-                entities = schema_dict.get("entities")
-                if isinstance(entities, list):
-                    schema_dict = {**schema_dict, "entities": {e: "" for e in entities}}
-                # Extract classification task names from dict schema
-                classification_tasks = [c["task"] for c in schema_dict.get("classifications", [])]
-                entity_order = list(schema_dict["entities"].keys()) if isinstance(schema_dict.get("entities"), dict) else []
-                metadata = {
-                    "field_metadata": {}, "entity_metadata": {},
-                    "relation_metadata": {}, "field_orders": {},
-                    "entity_order": entity_order, "relation_order": [],
-                    "classification_tasks": classification_tasks
-                }
-
-            # Ensure classifications have true_label without mutating a
-            # caller-owned dict schema in place. Only rebuild the configs that
-            # are missing the key, and only replace schema_dict if needed.
-            classifications = schema_dict.get("classifications")
-            if classifications and any("true_label" not in c for c in classifications):
-                schema_dict = {
-                    **schema_dict,
-                    "classifications": [
-                        c if "true_label" in c else {**c, "true_label": ["N/A"]}
-                        for c in classifications
-                    ],
-                }
-
-            schema_dicts.append(schema_dict)
-            metadata_list.append(metadata)
+        schema_dicts, metadata_list = self._build_schema_dicts_and_metadata(schema_list)
 
         # OPT-9: Skip duplicate normalization — _collate_batch handles it
         dataset = list(zip(texts, schema_dicts))
@@ -228,13 +183,81 @@ class GLiNER2(Extractor):
 
         return all_results
 
+    def _build_schema_dicts_and_metadata(
+        self, schema_list: List[Any]
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """Normalize schemas into ``(schema_dicts, metadata_list)``.
+
+        Builds the model-facing schema context used by production extraction.
+        """
+        schema_dicts: List[Dict] = []
+        metadata_list: List[Dict] = []
+
+        for schema in schema_list:
+            if hasattr(schema, 'build'):
+                schema_dict = schema.build()
+                classification_tasks = [c["task"] for c in schema_dict.get("classifications", [])]
+                metadata = {
+                    "field_metadata": schema._field_metadata,
+                    "entity_metadata": schema._entity_metadata,
+                    "relation_metadata": getattr(schema, '_relation_metadata', {}),
+                    "field_orders": schema._field_orders,
+                    "entity_order": schema._entity_order,
+                    "relation_order": getattr(schema, '_relation_order', []),
+                    "classification_tasks": classification_tasks,
+                    "entity_attribute_groups": getattr(
+                        schema, "_entity_attribute_groups", {}
+                    ),
+                    "entity_attribute_prompt_labels": getattr(
+                        schema, "_entity_attribute_prompt_labels", {}
+                    ),
+                    "entity_attribute_labels": getattr(
+                        schema, "_entity_attribute_labels", set()
+                    ),
+                }
+            else:
+                schema_dict = schema
+                # Normalize shorthand entity lists to dicts, e.g.
+                # {'entities': ['person']} -> {'entities': {'person': ''}}
+                entities = schema_dict.get("entities")
+                if isinstance(entities, list):
+                    schema_dict = {**schema_dict, "entities": {e: "" for e in entities}}
+                classification_tasks = [c["task"] for c in schema_dict.get("classifications", [])]
+                entity_order = list(schema_dict["entities"].keys()) if isinstance(schema_dict.get("entities"), dict) else []
+                metadata = {
+                    "field_metadata": {}, "entity_metadata": {},
+                    "relation_metadata": {}, "field_orders": {},
+                    "entity_order": entity_order, "relation_order": [],
+                    "classification_tasks": classification_tasks,
+                    "entity_attribute_groups": {},
+                    "entity_attribute_prompt_labels": {},
+                    "entity_attribute_labels": set(),
+                }
+
+            # Ensure classifications have true_label without mutating a
+            # caller-owned dict schema in place.
+            classifications = schema_dict.get("classifications")
+            if classifications and any("true_label" not in c for c in classifications):
+                schema_dict = {
+                    **schema_dict,
+                    "classifications": [
+                        c if "true_label" in c else {**c, "true_label": ["N/A"]}
+                        for c in classifications
+                    ],
+                }
+
+            schema_dicts.append(schema_dict)
+            metadata_list.append(metadata)
+
+        return schema_dicts, metadata_list
+
     def _extract_from_batch(
         self,
         batch: PreprocessedBatch,
         threshold: float,
         metadata_list: List[Dict],
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ) -> List[Dict[str, Any]]:
         """Extract from preprocessed batch."""
         # Encode batch
@@ -279,7 +302,7 @@ class GLiNER2(Extractor):
                     metadata=metadata_list[i],
                     include_confidence=include_confidence,
                     include_spans=include_spans,
-                    span_info=all_span_info[i]
+                    span_info=all_span_info[i],
                 )
                 results.append(sample_result)
             except Exception as e:
@@ -303,7 +326,7 @@ class GLiNER2(Extractor):
         metadata: Dict,
         include_confidence: bool,
         include_spans: bool,
-        span_info: Optional[Dict] = None
+        span_info: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """Extract from single sample."""
         results = {}
@@ -341,7 +364,7 @@ class GLiNER2(Extractor):
                     results, schema_name, task_type, embs, span_info,
                     schema_tokens, text_tokens, text_len, original_text,
                     start_mapping, end_mapping, threshold, metadata,
-                    cls_fields, include_confidence, include_spans
+                    cls_fields, include_confidence, include_spans,
                 )
 
         return results
@@ -439,7 +462,7 @@ class GLiNER2(Extractor):
         metadata: Dict,
         cls_fields: Dict,
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ):
         """Extract span-based results."""
         # Get field names
@@ -465,19 +488,28 @@ class GLiNER2(Extractor):
                 results[schema_name] = {}
             return
 
-        # Get span scores
+        # Get span scores. Keep raw logits when entity attributes are enabled,
+        # because single-label groups use a group-local softmax.
         struct_proj = self.count_embed(embs[1:], pred_count)
-        span_scores = torch.sigmoid(
-            torch.einsum("lkd,bpd->bplk", span_info["span_rep"], struct_proj)
+        raw_logits = torch.einsum(
+            "lkd,bpd->bplk", span_info["span_rep"], struct_proj
         )
+        span_scores = torch.sigmoid(raw_logits)
 
         # Extract based on type
         if schema_name == "entities":
-            results[schema_name] = self._extract_entities(
-                field_names, span_scores, text_len, text_tokens,
-                original_text, start_mapping, end_mapping,
-                threshold, metadata, include_confidence, include_spans
-            )
+            if metadata.get("entity_attribute_groups"):
+                results[schema_name] = self._extract_entities_with_attributes(
+                    field_names, span_scores, raw_logits, text_len, original_text,
+                    start_mapping, end_mapping, threshold, metadata,
+                    include_confidence, include_spans,
+                )
+            else:
+                results[schema_name] = self._extract_entities(
+                    field_names, span_scores, text_len, text_tokens,
+                    original_text, start_mapping, end_mapping,
+                    threshold, metadata, include_confidence, include_spans,
+                )
         elif task_type == "relations":
             results[schema_name] = self._extract_relations(
                 schema_name, field_names, span_scores, pred_count,
@@ -503,9 +535,10 @@ class GLiNER2(Extractor):
         threshold: float,
         metadata: Dict,
         include_confidence: bool,
-        include_spans: bool
+        include_spans: bool,
     ) -> List[Dict]:
         """Extract entity results."""
+
         scores = span_scores[0, :, -text_len:]
         entity_results = OrderedDict()
 
@@ -516,41 +549,194 @@ class GLiNER2(Extractor):
             idx = entity_names.index(name)
             meta = metadata.get("entity_metadata", {}).get(name, {})
             meta_threshold = meta.get("threshold")
-            ent_threshold = meta_threshold if meta_threshold is not None else threshold
             dtype = meta.get("dtype", "list")
 
-            spans = self._find_spans(
-                scores[idx], ent_threshold, text_len, text,
-                start_map, end_map
+            entity_scores = scores[idx]
+            ent_threshold = float(meta_threshold) if meta_threshold is not None else threshold
+
+            spans = finalize_spans(
+                self._find_spans(
+                    entity_scores, ent_threshold, text_len, text, start_map, end_map
+                ),
+                dtype=dtype,
             )
 
             if dtype == "list":
-                entity_results[name] = self._format_spans(spans, include_confidence, include_spans)
-            else:
-                if spans:
-                    text_val, conf, char_start, char_end = spans[0]
-                    
-                    if include_spans and include_confidence:
-                        entity_results[name] = {
-                            "text": text_val,
-                            "confidence": conf,
-                            "start": char_start,
-                            "end": char_end
-                        }
-                    elif include_spans:
-                        entity_results[name] = {
-                            "text": text_val,
-                            "start": char_start,
-                            "end": char_end
-                        }
-                    elif include_confidence:
-                        entity_results[name] = {"text": text_val, "confidence": conf}
-                    else:
-                        entity_results[name] = text_val
+                entity_results[name] = self._format_spans(
+                    spans, include_confidence, include_spans, already_finalized=True
+                )
+            elif spans:
+                text_val, conf, char_start, char_end = spans[0]
+                if include_spans and include_confidence:
+                    entity_results[name] = {"text": text_val, "confidence": conf, "start": char_start, "end": char_end}
+                elif include_spans:
+                    entity_results[name] = {"text": text_val, "start": char_start, "end": char_end}
+                elif include_confidence:
+                    entity_results[name] = {"text": text_val, "confidence": conf}
                 else:
-                    entity_results[name] = "" if not include_spans and not include_confidence else None
+                    entity_results[name] = text_val
+            else:
+                entity_results[name] = "" if not include_spans and not include_confidence else None
 
         return [entity_results] if entity_results else []
+
+    def _extract_entities_with_attributes(
+        self,
+        entity_names: List[str],
+        span_scores: torch.Tensor,
+        raw_logits: torch.Tensor,
+        text_len: int,
+        text: str,
+        start_map: List[int],
+        end_map: List[int],
+        threshold: float,
+        metadata: Dict,
+        include_confidence: bool,
+        include_spans: bool,
+    ) -> List[Dict]:
+        """Extract content entities and attach configured attribute values."""
+
+        groups = metadata.get("entity_attribute_groups", {})
+        prompt_labels = metadata.get("entity_attribute_prompt_labels", {})
+        attribute_labels = metadata.get("entity_attribute_labels", set())
+        group_indices: Dict[str, Any] = {}
+        for group_name, group in groups.items():
+            present = [
+                (label, entity_names.index(prompt_labels.get(label, label)))
+                for label in group.labels
+                if prompt_labels.get(label, label) in entity_names
+            ]
+            if present:
+                labels, indices = zip(*present)
+                group_indices[group_name] = (
+                    list(labels),
+                    torch.tensor(indices, device=raw_logits.device),
+                    group,
+                )
+
+        content_names = [name for name in entity_names if name not in attribute_labels]
+        scores = span_scores[0, :, -text_len:]
+        logits = raw_logits[0, :, -text_len:]
+        entity_results = OrderedDict()
+
+        for name in metadata.get("entity_order", content_names):
+            if name not in content_names:
+                continue
+            index = entity_names.index(name)
+            meta = metadata.get("entity_metadata", {}).get(name, {})
+            configured_threshold = meta.get("threshold")
+
+            entity_scores = scores[index]
+            entity_threshold = (
+                float(configured_threshold)
+                if configured_threshold is not None
+                else threshold
+            )
+
+            starts, widths = torch.where(entity_scores >= entity_threshold)
+            found: List[Dict[str, Any]] = []
+            for start, width in zip(starts.tolist(), widths.tolist()):
+                end = start + width + 1
+                if not (0 <= start < text_len and end <= text_len):
+                    continue
+                try:
+                    char_start, char_end = start_map[start], end_map[end - 1]
+                    span_text = text[char_start:char_end].strip()
+                except (IndexError, KeyError):
+                    continue
+                if not span_text:
+                    continue
+                found.append(
+                    {
+                        "text": span_text,
+                        "confidence": float(entity_scores[start, width].item()),
+                        "start": char_start,
+                        "end": char_end,
+                        **self._assign_entity_attributes(
+                            logits, start, width, group_indices, name
+                        ),
+                    }
+                )
+
+            surviving = {
+                (start, end, score)
+                for _, score, start, end in finalize_spans(
+                    [(item["text"], item["confidence"], item["start"], item["end"])
+                     for item in found],
+                    dtype=meta.get("dtype", "list"),
+                )
+            }
+            formatted = [
+                self._format_attributed_entity(item, include_confidence, include_spans)
+                for item in found
+                if (item["start"], item["end"], item["confidence"]) in surviving
+            ]
+            entity_results[name] = formatted if meta.get("dtype", "list") == "list" else (formatted[0] if formatted else None)
+
+        return [entity_results] if entity_results else []
+
+    @staticmethod
+    def _assign_entity_attributes(
+        logits: torch.Tensor,
+        start: int,
+        width: int,
+        group_indices: Dict[str, Any],
+        entity_name: str,
+    ) -> Dict[str, Any]:
+        assigned: Dict[str, Any] = {}
+        for group_name, (labels, indices, group) in group_indices.items():
+            if group.applies_to is not None and entity_name not in group.applies_to:
+                continue
+            values = logits[indices, start, width]
+            if group.multi_label:
+                probabilities = torch.sigmoid(values)
+                assigned[group_name] = [
+                    {"label": labels[i], "confidence": probabilities[i].item()}
+                    for i in range(len(labels))
+                    if probabilities[i].item() >= group.threshold
+                ]
+            else:
+                probabilities = torch.softmax(values, dim=-1)
+                best = int(probabilities.argmax())
+                assigned[group_name] = {
+                    "label": labels[best],
+                    "confidence": probabilities[best].item(),
+                }
+        return assigned
+
+    @staticmethod
+    def _dedupe_attributed_entities(
+        found: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        found.sort(key=lambda item: item["confidence"], reverse=True)
+        kept: List[Dict[str, Any]] = []
+        for item in found:
+            if not any(
+                not (item["end"] <= other["start"] or item["start"] >= other["end"])
+                for other in kept
+            ):
+                kept.append(item)
+        return kept
+
+    @classmethod
+    def _format_attributed_entity(
+        cls,
+        entity: Dict[str, Any],
+        include_confidence: bool,
+        include_spans: bool,
+    ) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"text": entity["text"]}
+        if include_confidence:
+            result["confidence"] = entity["confidence"]
+        if include_spans:
+            result["start"] = entity["start"]
+            result["end"] = entity["end"]
+        result.update(
+            (key, value)
+            for key, value in entity.items()
+            if key not in cls._ENTITY_RESULT_KEYS
+        )
+        return result
 
     def _extract_relations(
         self,
@@ -779,19 +965,16 @@ class GLiNER2(Extractor):
         self,
         spans: List[Tuple],
         include_confidence: bool,
-        include_spans: bool = False
+        include_spans: bool = False,
+        already_finalized: bool = False,
     ) -> Union[List[str], List[Dict], List[Tuple]]:
-        """Format spans with overlap removal and optional position info."""
+        """Format entity spans after canonical overlap decoding."""
         if not spans:
             return []
-
-        sorted_spans = sorted(spans, key=lambda x: x[1], reverse=True)
-        selected = []
-
-        for text, conf, start, end in sorted_spans:
-            overlap = any(not (end <= s[2] or start >= s[3]) for s in selected)
-            if not overlap:
-                selected.append((text, conf, start, end))
+        if already_finalized:
+            selected = spans
+        else:
+                selected = finalize_spans(spans)
 
         # Format based on flags
         if include_spans and include_confidence:
@@ -999,7 +1182,10 @@ class GLiNER2(Extractor):
                 format_results: bool = True, include_confidence: bool = False,
                 include_spans: bool = False, max_len: Optional[int] = None) -> Dict:
         """Extract from single text."""
-        return self.batch_extract([text], schema, 1, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)[0]
+        return self.batch_extract(
+            [text], schema, 1, threshold, 0, format_results,
+            include_confidence, include_spans, max_len=max_len,
+        )[0]
 
     def extract_long(
         self,
@@ -1123,7 +1309,10 @@ class GLiNER2(Extractor):
                         include_spans: bool = False, max_len: Optional[int] = None) -> Dict:
         """Extract entities from text."""
         schema = self.create_schema().entities(entity_types)
-        return self.extract(text, schema, threshold, format_results, include_confidence, include_spans, max_len=max_len)
+        return self.extract(
+            text, schema, threshold, format_results, include_confidence,
+            include_spans, max_len=max_len,
+        )
 
     def extract_entities_long(
         self,
@@ -1159,7 +1348,10 @@ class GLiNER2(Extractor):
                                max_len: Optional[int] = None) -> List[Dict]:
         """Batch extract entities."""
         schema = self.create_schema().entities(entity_types)
-        return self.batch_extract(texts, schema, batch_size, threshold, 0, format_results, include_confidence, include_spans, max_len=max_len)
+        return self.batch_extract(
+            texts, schema, batch_size, threshold, 0, format_results,
+            include_confidence, include_spans, max_len=max_len,
+        )
 
     def batch_extract_entities_long(
         self,
@@ -1300,6 +1492,7 @@ class GLiNER2(Extractor):
                 desc = part
 
         return name, dtype, choices, desc
+
 
 
 # Aliases
