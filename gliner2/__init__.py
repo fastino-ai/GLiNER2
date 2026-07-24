@@ -6,6 +6,7 @@ from .inference.schema_model import (
     FieldInput,
     StructureInput,
     ClassificationInput,
+    ValidatorInput,
 )
 from .api_client import (
     GLiNER2API,
