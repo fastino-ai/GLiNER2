@@ -74,7 +74,7 @@ class Extractor(PreTrainedModel):
     """
     config_class = ExtractorConfig
 
-    def __init__(self, config: ExtractorConfig, encoder_config=None, tokenizer=None):
+    def __init__(self, config: ExtractorConfig, encoder_config=None, tokenizer=None, **kwargs):
         super().__init__(config)
         self.config = config
         self.max_width = config.max_width
@@ -83,12 +83,14 @@ class Extractor(PreTrainedModel):
         if tokenizer is not None:
             self.processor = SchemaTransformer(
                 tokenizer=tokenizer,
-                token_pooling=config.token_pooling
+                token_pooling=config.token_pooling,
+                **kwargs,
             )
         else:
             self.processor = SchemaTransformer(
                 config.model_name,
-                token_pooling=config.token_pooling
+                token_pooling=config.token_pooling,
+                **kwargs,
             )
 
         # Load encoder
@@ -681,6 +683,13 @@ class Extractor(PreTrainedModel):
             compile: If True, torch.compile the encoder and span-rep
                 with ``dynamic=True`` for fused GPU kernels.
             map_location: Device to load the model onto (e.g. "cpu", "cuda").
+            language: ISO 639-1 language code for text splitting.
+                If "ja", "zh", "ko", use language-specific tokenizers
+                because whitespace splitting is insufficient.
+            ja_dict_type: For Japanese, specify the dictionary type
+                for text splitting (e.g., "small", "core", "full". Default is "core").
+            ja_split_mode: For Japanese, specify the split mode
+                for text splitting (e.g., "A", "B", "C". Default is "C").
             **kwargs: Additional keyword arguments.
 
         To use a LoRA adapter:
@@ -709,7 +718,7 @@ class Extractor(PreTrainedModel):
         encoder_config = AutoConfig.from_pretrained(encoder_config_path)
 
         tokenizer = AutoTokenizer.from_pretrained(repo_or_dir)
-        model = cls(config, encoder_config=encoder_config, tokenizer=tokenizer)
+        model = cls(config, encoder_config=encoder_config, tokenizer=tokenizer, **kwargs)
 
         # Load weights
         try:

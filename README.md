@@ -27,6 +27,9 @@ pip install gliner2
 
 # Full local inference and training (installs torch, transformers, etc.)
 pip install gliner2[local]
+
+# Improve CJK languages token-splitting (installs jieba|sudachipy|kiwipiepy etc.)
+pip install gliner2[zh|ja|ja-small|ja-full|ko]
 ```
 
 The base install gives you `Schema`, `SchemaInput`, `RegexValidator`, `GLiNER2API`,
@@ -48,6 +51,38 @@ result = extractor.extract_entities(text, ["company", "person", "product", "loca
 
 print(result)
 # {'entities': {'company': ['Apple'], 'person': ['Tim Cook'], 'product': ['iPhone 15'], 'location': ['Cupertino']}}
+```
+
+### For Chinese text
+
+```python
+from gliner2 import GLiNER2  # requires gliner2[local,zh]
+
+extractor = GLiNER2.from_pretrained("fastino/gliner2-multi-v1", language="zh")
+```
+
+### For Japanese text
+
+Additional options:
+
+- `ja_dict_type`: Depending on the size of the vocabulary included, you can choose from [`small`, `core`, `full`].
+  - Default: `core`
+  - The available options correspond to the optional dependencies selected during the `pip install` command.
+- `ja_split_mode`: Depending on the token granularity, you can choose from [`A`, `B`, `C`].
+  - Default: `C`
+
+```python
+from gliner2 import GLiNER2  # requires gliner2[local,ja|ja-small|ja-full]
+
+extractor = GLiNER2.from_pretrained("fastino/gliner2-multi-v1", language="ja", ja_dict_type="small|core|full", ja_split_mode="A|B|C")
+```
+
+### For Korean text
+
+```python
+from gliner2 import GLiNER2  # requires gliner2[local,ko]
+
+extractor = GLiNER2.from_pretrained("fastino/gliner2-multi-v1", language="ko")
 ```
 
 ### Quantization and Compilation
