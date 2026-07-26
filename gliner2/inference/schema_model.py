@@ -5,8 +5,34 @@ This module provides validation models for creating GLiNER2 schemas
 from JSON or dictionary inputs.
 """
 
+import re
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class ValidatorInput(BaseModel):
+    """Validates a regex span-filter definition (JSON form of RegexValidator).
+
+    Args:
+        pattern: Regular expression to match against an extracted span
+        mode: 'full' requires the whole span to match; 'partial' matches a substring
+        exclude: If True, keep spans that do NOT match (invert the filter)
+        ignore_case: Case-insensitive matching (maps to re.IGNORECASE)
+    """
+    pattern: str = Field(..., min_length=1, description="Regular expression")
+    mode: Literal["full", "partial"] = Field(default="full", description="Match mode")
+    exclude: bool = Field(default=False, description="Invert the filter")
+    ignore_case: bool = Field(default=True, description="Case-insensitive matching")
+
+    @field_validator('pattern')
+    @classmethod
+    def validate_pattern(cls, v: str) -> str:
+        """Ensure the pattern compiles as a regex."""
+        try:
+            re.compile(v)
+        except re.error as err:
+            raise ValueError(f"invalid regex: {v!r}") from err
+        return v
 
 
 class FieldInput(BaseModel):
@@ -17,11 +43,17 @@ class FieldInput(BaseModel):
         dtype: Data type - 'str' for single value, 'list' for multiple values
         choices: Optional list of valid choices for classification-style fields
         description: Optional description of the field
+        threshold: Optional per-field confidence threshold (0..1)
+        validators: Optional regex span filters applied to this field's extractions
     """
     name: str = Field(..., min_length=1, description="Field name")
     dtype: Literal["str", "list"] = Field(default="list", description="Data type")
     choices: Optional[List[str]] = Field(default=None, description="Valid choices")
     description: Optional[str] = Field(default=None, description="Field description")
+    threshold: Optional[float] = Field(default=None, description="Per-field confidence threshold")
+    validators: Optional[List[ValidatorInput]] = Field(
+        default=None, description="Regex span filters"
+    )
 
     @field_validator('choices')
     @classmethod
@@ -29,6 +61,14 @@ class FieldInput(BaseModel):
         """Ensure choices list is not empty if provided."""
         if v is not None and len(v) == 0:
             raise ValueError("choices must contain at least one option")
+        return v
+
+    @field_validator('threshold')
+    @classmethod
+    def validate_threshold(cls, v: Optional[float]) -> Optional[float]:
+        """Ensure threshold is in [0, 1] if provided."""
+        if v is not None and not 0 <= v <= 1:
+            raise ValueError(f"threshold must be between 0 and 1, got {v}")
         return v
 
 
@@ -48,10 +88,12 @@ class ClassificationInput(BaseModel):
         task: Task name
         labels: List of classification labels
         multi_label: Whether multiple labels can be selected
+        cls_threshold: Confidence threshold for this task (0..1)
     """
     task: str = Field(..., min_length=1, description="Task name")
     labels: List[str] = Field(..., min_length=2, description="Classification labels")
     multi_label: bool = Field(default=False, description="Multi-label classification")
+    cls_threshold: float = Field(default=0.5, description="Per-task confidence threshold")
 
     @field_validator('labels')
     @classmethod
@@ -61,6 +103,14 @@ class ClassificationInput(BaseModel):
             raise ValueError("labels must be unique")
         if any(not label.strip() for label in v):
             raise ValueError("labels cannot be empty strings")
+        return v
+
+    @field_validator('cls_threshold')
+    @classmethod
+    def validate_cls_threshold(cls, v: float) -> float:
+        """Ensure cls_threshold is in [0, 1]."""
+        if not 0 <= v <= 1:
+            raise ValueError(f"cls_threshold must be between 0 and 1, got {v}")
         return v
 
 
