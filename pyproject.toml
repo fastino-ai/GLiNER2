@@ -43,6 +43,24 @@ local = [
     "transformers",
     "peft",
 ]
+ja = [
+    "sudachidict-core",
+    "sudachipy",
+]
+ja-small = [
+    "sudachidict-small",
+    "sudachipy",
+]
+ja-full = [
+    "sudachidict-full",
+    "sudachipy",
+]
+zh = [
+    "jieba",
+]
+ko = [
+    "kiwipiepy",
+]
 
 [tool.pytest.ini_options]
 markers = [
