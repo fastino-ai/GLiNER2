@@ -1059,7 +1059,7 @@ train_dataset.validate(strict=True, raise_on_error=True)
 train_dataset.print_stats()
 
 # Split into train/validation
-train_data, val_data, _ = train_dataset.split(
+train_data, eval_data, _ = train_dataset.split(
     train_ratio=0.8,
     val_ratio=0.2,
     test_ratio=0.0,
@@ -1087,7 +1087,7 @@ config = TrainingConfig(
 
 # Train
 trainer = GLiNER2Trainer(model, config)
-trainer.train(train_data=train_data, val_data=val_data)
+trainer.train(train_data=train_data, eval_data=eval_data)
 
 # Load best model
 model = GLiNER2.from_pretrained("./ner_model/best")
