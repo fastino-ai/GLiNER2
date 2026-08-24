@@ -196,19 +196,16 @@ class SpanExtractorModel(BaseExtractorModel):
         # Encode batch through transformer
         all_token_embs, all_schema_embs = self._encode_batch(batch)
 
-        # Batch span rep for samples that need it
-        span_samples = []
-        for i in range(len(batch)):
-            has_span = any(t != "classifications" for t in batch.task_types[i])
-            if has_span and all_token_embs[i].numel() > 0:
-                span_samples.append(i)
-
-        all_span_info = [None] * len(batch)
-        if span_samples:
-            span_embs = [all_token_embs[i] for i in span_samples]
-            span_results = self.compute_span_rep_batched(span_embs)
-            for idx, si in zip(span_samples, span_results):
-                all_span_info[idx] = si
+        # Build count-aware structural queries for every span task, concatenate
+        # them per sample, and score them directly without materializing
+        # [B, L, W, H] span representations.  ``mask_invalid=False`` keeps BCE
+        # inputs finite; the loss applies the legacy validity mask afterwards.
+        all_span_scores = self._compute_training_span_scores_batched(
+            all_token_embs,
+            all_schema_embs,
+            batch.task_types,
+            batch.structure_labels,
+        )
 
         # Compute losses for each sample
         cls_losses = []
@@ -225,7 +222,7 @@ class SpanExtractorModel(BaseExtractorModel):
                     task_types=batch.task_types[i],
                     structure_labels=batch.structure_labels[i],
                     device=device,
-                    span_info=all_span_info[i]
+                    span_scores_per_schema=all_span_scores[i]
                 )
 
                 cls_losses.append(sample_losses["classification"])
@@ -341,32 +338,13 @@ class SpanExtractorModel(BaseExtractorModel):
             task_types: List[str],
             structure_labels: List[Any],
             device: torch.device,
-            span_info: Optional[Dict[str, Any]] = None
+            span_scores_per_schema: Optional[List[Optional[torch.Tensor]]] = None
     ) -> Dict[str, torch.Tensor]:
-        """
-        Compute all losses for a single sample.
-
-        Args:
-            token_embeddings: (text_len, hidden) text token embeddings
-            embs_per_schema: List of schema embeddings
-            task_types: Task type for each schema
-            structure_labels: Labels for each schema
-            device: Computation device
-            span_info: Pre-computed span representations (from batched computation).
-                       If None, computed on-the-fly for this sample.
-
-        Returns:
-            Dict with classification, structure, and count losses
-        """
+        """Compute all losses for a single sample from direct span logits."""
         cls_loss = torch.tensor(0.0, device=device)
         struct_loss = torch.tensor(0.0, device=device)
         count_loss = torch.tensor(0.0, device=device)
-
-        # Compute span representations if needed and not pre-computed
-        if span_info is None:
-            has_span_task = any(t != "classifications" for t in task_types)
-            if has_span_task and token_embeddings.numel() > 0:
-                span_info = self.compute_span_rep(token_embeddings)
+        span_scores_per_schema = span_scores_per_schema or [None] * len(task_types)
 
         all_counts = []
         all_p_embs = []
@@ -378,7 +356,6 @@ class SpanExtractorModel(BaseExtractorModel):
             schema_emb = torch.stack(embs_per_schema[i])
 
             if task_type == "classifications":
-                # Classification loss
                 cls_embeds = schema_emb[1:]  # Skip [P] token
                 logits = self.classifier(cls_embeds).squeeze(-1)
                 labels = torch.tensor(structure_labels[i], dtype=torch.float, device=device)
@@ -386,27 +363,21 @@ class SpanExtractorModel(BaseExtractorModel):
                     logits, labels, reduction="sum"
                 )
             else:
-                # Structure loss
                 structure = structure_labels[i]
-
                 if structure[0] == 0:
-                    # No instances to extract
                     continue
 
-                if span_info is not None:
-                    struct_loss = struct_loss + self.compute_struct_loss(
-                        span_info["span_rep"],
-                        schema_emb,
-                        structure,
-                        span_info["span_mask"]
+                scores = span_scores_per_schema[i]
+                if scores is not None:
+                    struct_loss = struct_loss + self.compute_struct_loss_from_scores(
+                        scores, structure
                     )
 
-                # Collect for count loss (skip entities)
+                # Preserve legacy count-loss behavior (entities are skipped).
                 if task_type != "entities":
                     all_counts.append(min(structure[0], 19))
                     all_p_embs.append(schema_emb[0])
 
-        # Count loss
         if all_counts and all_p_embs:
             counts = torch.tensor(all_counts, dtype=torch.long, device=device)
             p_embs = torch.stack(all_p_embs)
@@ -417,6 +388,77 @@ class SpanExtractorModel(BaseExtractorModel):
             "structure": struct_loss,
             "count": count_loss
         }
+
+    def _compute_training_span_scores_batched(
+            self,
+            token_embs_list: List[torch.Tensor],
+            all_schema_embs: List[List[List[torch.Tensor]]],
+            all_task_types: List[List[str]],
+            all_structure_labels: List[List[Any]],
+    ) -> List[List[Optional[torch.Tensor]]]:
+        """Directly score all training span tasks with one token-side pass/sample.
+
+        Each schema's ``count_embed`` output is flattened to query vectors.
+        Queries from all span schemas in a sample are concatenated, passed once
+        through the factorized scorer, then restored to ``[count, fields, L, W]``.
+        """
+        batch_size = len(token_embs_list)
+        outputs: List[List[Optional[torch.Tensor]]] = [
+            [None] * len(all_task_types[i]) for i in range(batch_size)
+        ]
+        query_chunks: List[List[torch.Tensor]] = [[] for _ in range(batch_size)]
+        query_slices: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}
+        offsets = [0] * batch_size
+
+        for sample_idx in range(batch_size):
+            if token_embs_list[sample_idx].numel() == 0:
+                continue
+            for task_idx, task_type in enumerate(all_task_types[sample_idx]):
+                if task_type == "classifications":
+                    continue
+                if task_idx >= len(all_schema_embs[sample_idx]):
+                    continue
+                if not all_schema_embs[sample_idx][task_idx]:
+                    continue
+
+                structure = all_structure_labels[sample_idx][task_idx]
+                if structure[0] == 0:
+                    continue
+
+                schema_emb = torch.stack(all_schema_embs[sample_idx][task_idx])
+                gold_count = min(structure[0], 19)
+                struct_proj = self.count_embed(schema_emb[1:], gold_count)
+                if struct_proj.numel() == 0:
+                    continue
+
+                count_dim, field_dim, hidden = struct_proj.shape
+                flat_queries = struct_proj.reshape(count_dim * field_dim, hidden)
+                start = offsets[sample_idx]
+                stop = start + flat_queries.shape[0]
+                offsets[sample_idx] = stop
+                query_chunks[sample_idx].append(flat_queries)
+                query_slices[(sample_idx, task_idx)] = (
+                    start, stop, count_dim, field_dim
+                )
+
+        active_indices = [i for i, chunks in enumerate(query_chunks) if chunks]
+        if not active_indices:
+            return outputs
+
+        direct_scores = self.compute_span_scores_batched(
+            [token_embs_list[i] for i in active_indices],
+            [torch.cat(query_chunks[i], dim=0) for i in active_indices],
+            mask_invalid=False,
+        )
+        scores_by_sample = dict(zip(active_indices, direct_scores))
+
+        for (sample_idx, task_idx), (start, stop, count_dim, field_dim) in query_slices.items():
+            task_scores = scores_by_sample[sample_idx][start:stop]
+            outputs[sample_idx][task_idx] = task_scores.reshape(
+                count_dim, field_dim, task_scores.shape[-2], task_scores.shape[-1]
+            )
+
+        return outputs
 
     # =========================================================================
     # Span Representation
@@ -526,6 +568,59 @@ class SpanExtractorModel(BaseExtractorModel):
             })
         return results
 
+    def compute_span_scores_batched(
+            self,
+            token_embs_list: List[torch.Tensor],
+            query_embs_list: List[torch.Tensor],
+            *,
+            mask_invalid: bool = True,
+    ) -> List[torch.Tensor]:
+        """Score variable-length token batches directly against queries."""
+        if len(token_embs_list) != len(query_embs_list):
+            raise ValueError("token/query batch sizes must match")
+        if not token_embs_list:
+            return []
+
+        device = token_embs_list[0].device
+        dtype = token_embs_list[0].dtype
+        text_lengths = [len(t) for t in token_embs_list]
+        query_lengths = [len(q) for q in query_embs_list]
+        max_text_len = max(text_lengths)
+        max_queries = max(query_lengths, default=0)
+        batch_size = len(token_embs_list)
+        hidden = token_embs_list[0].shape[-1]
+
+        padded_tokens = torch.zeros(
+            batch_size, max_text_len, hidden, device=device, dtype=dtype
+        )
+        padded_queries = torch.zeros(
+            batch_size, max_queries, hidden, device=device, dtype=dtype
+        )
+        for i, (tokens, queries) in enumerate(zip(token_embs_list, query_embs_list)):
+            padded_tokens[i, :text_lengths[i]] = tokens
+            padded_queries[i, :query_lengths[i]] = queries
+
+        text_len_t = torch.tensor(text_lengths, device=device)
+        logits = self._compute_span_scores_core(
+            padded_tokens, padded_queries, text_len_t, mask_invalid
+        )
+        return [
+            logits[i, :query_lengths[i], :text_lengths[i], :]
+            for i in range(batch_size)
+        ]
+
+    def _compute_span_scores_core(
+            self,
+            padded: torch.Tensor,
+            queries: torch.Tensor,
+            text_len_t: torch.Tensor,
+            mask_invalid: bool = True,
+    ) -> torch.Tensor:
+        """Dense direct-score core kept separate for ``torch.compile``."""
+        return self.span_rep.score_queries(
+            padded, queries, text_len_t, mask_invalid=mask_invalid
+        )
+
     def _compute_span_rep_core(
             self,
             padded: torch.Tensor,
@@ -567,6 +662,56 @@ class SpanExtractorModel(BaseExtractorModel):
         span_rep = self.span_rep(padded, safe_spans)  # (batch, max_text_len, max_width, hidden)
 
         return span_rep, safe_spans, span_mask
+
+    def compute_struct_loss_from_scores(
+            self,
+            scores: torch.Tensor,
+            structure: List[Any],
+            masking_rate: float = 0.5
+    ) -> torch.Tensor:
+        """Compute the legacy structure loss from direct raw span logits."""
+        gold_count = min(structure[0], 19)
+        if scores.shape[0] != gold_count:
+            raise ValueError(
+                f"score count dimension {scores.shape[0]} != gold count {gold_count}"
+            )
+
+        labs = torch.zeros_like(scores)
+        for i in range(gold_count):
+            gold_spans = structure[1][i]
+            for k, span in enumerate(gold_spans):
+                if span is None or span == (-1, -1):
+                    continue
+                if isinstance(span, tuple):
+                    start, end = span
+                    width = end - start
+                    if 0 <= start < scores.shape[2] and 0 <= width < scores.shape[3]:
+                        labs[i, k, start, width] = 1
+                elif isinstance(span, list):
+                    for sub in span:
+                        if sub is None or sub == (-1, -1):
+                            continue
+                        start, end = sub
+                        width = end - start
+                        if 0 <= start < scores.shape[2] and 0 <= width < scores.shape[3]:
+                            labs[i, k, start, width] = 1
+
+        if masking_rate > 0.0 and self.training:
+            negative = (labs == 0)
+            random_mask = torch.rand_like(scores) < masking_rate
+            loss_mask = (~(negative & random_mask)).float()
+        else:
+            loss_mask = torch.ones_like(scores)
+
+        loss = F.binary_cross_entropy_with_logits(scores, labs, reduction="none")
+        loss = loss * loss_mask
+
+        length, width = scores.shape[-2:]
+        starts = torch.arange(length, device=scores.device).unsqueeze(1)
+        offsets = torch.arange(width, device=scores.device).unsqueeze(0)
+        valid = (starts + offsets) < length
+        loss = loss * valid.unsqueeze(0).unsqueeze(0).to(loss.dtype)
+        return loss.sum()
 
     def compute_struct_loss(
             self,
@@ -763,14 +908,16 @@ class SpanExtractorModel(BaseExtractorModel):
     def compile(self) -> 'Extractor':
         """Compile tensor subgraphs with ``torch.compile(dynamic=True)``.
 
-        Three components are compiled (all verified 0 graph breaks):
+        Four components are compiled:
 
         - **encoder** (DeBERTa backbone)
-        - **_compute_span_rep_core** (span index + MLP)
+        - **_compute_span_rep_core** (legacy span index + MLP)
+        - **_compute_span_scores_core** (factorized direct span scoring)
         - **count_embed** (CompileSafeGRU + DownscaledTransformer)
 
-        The list-of-tensors padding in ``compute_span_rep_batched`` and the
-        per-sample Python decode path are left in eager mode.
+        The list-of-tensors padding in ``compute_span_rep_batched`` /
+        ``compute_span_scores_batched`` and the per-sample Python decode path
+        are left in eager mode.
 
         The first call triggers tracing and is slow; subsequent calls
         with similar shapes use the cached compiled graph.
@@ -788,8 +935,13 @@ class SpanExtractorModel(BaseExtractorModel):
         self._compute_span_rep_core = torch.compile(
             self._compute_span_rep_core, dynamic=True,
         )
+        self._compute_span_scores_core = torch.compile(
+            self._compute_span_scores_core, dynamic=True,
+        )
         self.count_embed = torch.compile(self.count_embed, dynamic=True)
-        logger.info("Compiled encoder, span-rep, and count-embed with torch.compile(dynamic=True)")
+        logger.info(
+            "Compiled encoder, span-rep/direct-score, and count-embed with torch.compile(dynamic=True)"
+        )
         return self
 
     # =========================================================================

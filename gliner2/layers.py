@@ -399,6 +399,100 @@ class SpanMarkerV0(nn.Module):
 
         return self.out_project(cat).view(B, L, self.max_width, D)
 
+    def score_queries(
+        self,
+        h: torch.Tensor,
+        queries: torch.Tensor,
+        text_lengths: Optional[torch.Tensor] = None,
+        *,
+        mask_invalid: bool = True,
+    ) -> torch.Tensor:
+        """Score spans directly against query vectors without final span materialization.
+
+        For valid spans this is algebraically equivalent to ``forward()``
+        followed by a dot product with ``queries``.  The first layer of
+        ``out_project`` is split
+        into start/end halves and the final layer is folded into the queries.
+
+        Dropout remains in the same locations as the legacy path, so this
+        factorization is valid in training as well as inference.  Set
+        ``mask_invalid=False`` when the caller applies the legacy span mask
+        after computing a loss; using ``-inf`` logits before BCE can otherwise
+        produce ``inf * 0 -> nan``.  Invalid unmasked entries are finite padding
+        values and are intentionally ignored by that post-loss validity mask.
+
+        Args:
+            h: Token representations ``[B, L, H]``.
+            queries: Query vectors ``[B, Q, H]``.
+            text_lengths: Optional true sequence lengths ``[B]`` for padded input.
+            mask_invalid: Fill invalid spans with ``-inf`` when True.
+
+        Returns:
+            Raw span logits ``[B, Q, L, max_width]``.
+        """
+        B, L, H = h.shape
+        if queries.ndim != 3 or queries.shape[0] != B or queries.shape[-1] != H:
+            raise ValueError(
+                "queries must have shape [batch, num_queries, hidden_size]"
+            )
+
+        first_linear = self.out_project[0]   # 2H -> 4H
+        dropout = self.out_project[2]        # same module/location as legacy
+        final_linear = self.out_project[3]   # 4H -> H
+
+        # Legacy computes ReLU(cat(start_rep, end_rep)).  ReLU is elementwise
+        start_rep = self.project_start(h).relu()
+        end_rep = self.project_end(h).relu()
+
+        # Split W1 = [W_start | W_end].  These large projections are now done
+        # once per token rather than once per candidate span.
+        start_hidden = F.linear(start_rep, first_linear.weight[:, :H], None)
+        end_hidden = F.linear(end_rep, first_linear.weight[:, H:], None)
+
+        starts = torch.arange(L, device=h.device).unsqueeze(1)
+        widths = torch.arange(self.max_width, device=h.device).unsqueeze(0)
+        ends = starts + widths
+
+        valid = (ends < L).unsqueeze(0).expand(B, -1, -1)
+        if text_lengths is not None:
+            valid = valid & (ends.unsqueeze(0) < text_lengths[:, None, None])
+
+        # Consecutive span ends are sliding windows over end_hidden.  Padding by
+        # max_width - 1 and unfolding creates a strided view instead of two
+        # [B, L, W, 4H] advanced-indexing gathers.  The start contribution stays
+        # [B, L, 1, 4H] and broadcasts across widths.
+        end_padded = F.pad(
+            end_hidden, (0, 0, 0, self.max_width - 1)
+        )
+        end_windows = end_padded.unfold(1, self.max_width, 1).permute(0, 1, 3, 2)
+        hidden = start_hidden.unsqueeze(2) + end_windows
+        if first_linear.bias is not None:
+            hidden = hidden + first_linear.bias
+        hidden = hidden.relu()
+
+        # Preserve the legacy dropout placement and flattened element order.
+        # Keeping this flattened also feeds baddbmm directly without reshaping
+        # back to [B, L, W, 4H].
+        hidden = dropout(hidden.reshape(B, L * self.max_width, -1))
+
+        # q^T(W2 d + b2) = (q^T W2)d + q^T b2
+        folded_queries = torch.matmul(queries, final_linear.weight)
+        folded_queries_t = folded_queries.transpose(1, 2)
+        if final_linear.bias is not None:
+            query_bias = torch.matmul(queries, final_linear.bias)
+            logits = torch.baddbmm(
+                query_bias[:, None, :], hidden, folded_queries_t
+            )
+        else:
+            logits = torch.bmm(hidden, folded_queries_t)
+        logits = logits.transpose(1, 2).reshape(
+            B, queries.shape[1], L, self.max_width
+        )
+
+        if mask_invalid:
+            logits = logits.masked_fill(~valid[:, None, :, :], float("-inf"))
+        return logits
+
 
 class SpanRepLayer(nn.Module):
     """Factory class for various span representation approaches.
@@ -442,3 +536,16 @@ class SpanRepLayer(nn.Module):
                 [B, L, max_width, D].
         """
         return self.span_rep_layer(x, *args)
+
+    def score_queries(
+        self,
+        x: torch.Tensor,
+        queries: torch.Tensor,
+        text_lengths: Optional[torch.Tensor] = None,
+        *,
+        mask_invalid: bool = True,
+    ) -> torch.Tensor:
+        """Direct factorized span scoring for ``markerV0``."""
+        return self.span_rep_layer.score_queries(
+            x, queries, text_lengths, mask_invalid=mask_invalid
+        )

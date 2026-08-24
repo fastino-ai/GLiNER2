@@ -268,15 +268,14 @@ class RawScorer:
             token_embs, schema_embs = self.processor.extract_embeddings_from_batch(
                 encoded, batch.input_ids, batch
             )
-            span_infos = self.model.compute_span_rep_batched(token_embs)
             for local_index, caller_text in enumerate(chunk_texts):
                 results.append(self._build_lattice(
                     caller_text,
                     schema_list[offset + local_index],
                     batch,
                     local_index,
+                    token_embs[local_index],
                     schema_embs[local_index],
-                    span_infos[local_index],
                     count_top_k,
                 ))
         return results
@@ -653,8 +652,8 @@ class RawScorer:
         original_schema: Any,
         batch: Any,
         index: int,
+        token_emb: torch.Tensor,
         schema_embs: Sequence[Sequence[torch.Tensor]],
-        span_info: Mapping[str, torch.Tensor],
         count_top_k: int,
     ) -> ScoreLattice:
         starts_all = list(batch.start_mappings[index])
@@ -662,28 +661,34 @@ class RawScorer:
 
         # collate_fn_inference may append punctuation.  Start mappings at or past
         # len(caller_text) describe that synthetic suffix, so they are excluded.
-        # Keeping this rule tied to starts (rather than token text) also handles a
-        # caller whose final character is itself punctuation.
         caller_token_count = len(starts_all)
         while caller_token_count and starts_all[caller_token_count - 1] >= len(caller_text):
             caller_token_count -= 1
         starts = starts_all[:caller_token_count]
         ends = ends_all[:caller_token_count]
 
-        dense_rep = span_info["span_rep"]
         all_token_count = len(starts_all)
-        document_start = max(0, dense_rep.shape[0] - all_token_count)
-        dense_rep = dense_rep[document_start:document_start + caller_token_count]
-        length, width = dense_rep.shape[:2]
-        row = torch.arange(length, device=dense_rep.device).unsqueeze(1)
-        col = torch.arange(width, device=dense_rep.device).unsqueeze(0)
+        document_start = max(0, token_emb.shape[0] - all_token_count)
+        document_tokens = token_emb[
+            document_start:document_start + caller_token_count
+        ]
+        length = document_tokens.shape[0]
+        width = self.model.max_width
+        row = torch.arange(length, device=document_tokens.device).unsqueeze(1)
+        col = torch.arange(width, device=document_tokens.device).unsqueeze(0)
         dense_ends = row + col
         valid = dense_ends < caller_token_count
         span_starts = row.expand(length, width)
 
-        tasks: List[TaskLattice] = []
+        # First construct every task/count hypothesis and its count-aware query
+        # vectors.  All non-empty queries are concatenated so the token-side
+        # factorized span computation runs once for the whole document.
+        task_specs = []
+        query_chunks = []
+        query_offset = 0
         task_types = batch.task_types[index]
         token_schemas = batch.schema_tokens_list[index]
+
         for task_index, (tokens, task_type, embeddings) in enumerate(
             zip(token_schemas, task_types, schema_embs)
         ):
@@ -699,20 +704,60 @@ class RawScorer:
                 k = min(count_top_k, count_logits.numel())
                 values, indices = torch.topk(probabilities, k=k)
                 hypotheses = [
-                    (int(count), float(torch.logit(prob.clamp(1e-7, 1 - 1e-7)).detach().cpu()), float(prob.detach().cpu()))
+                    (
+                        int(count),
+                        float(torch.logit(prob.clamp(1e-7, 1 - 1e-7)).detach().cpu()),
+                        float(prob.detach().cpu()),
+                    )
                     for prob, count in zip(values, indices)
                 ]
 
-            count_scores: List[CountHypothesis] = []
+            hypothesis_specs = []
             for count, count_logit, count_probability in hypotheses:
                 if count <= 0:
-                    role_logits = dense_rep.new_empty((0, len(fields), length, width))
+                    hypothesis_specs.append((
+                        count, count_logit, count_probability, None, 0, 0
+                    ))
+                    continue
+
+                projected = self.model.count_embed(embs[1:], count)
+                slots, roles, hidden = projected.shape
+                flat = projected.reshape(slots * roles, hidden)
+                start = query_offset
+                stop = start + flat.shape[0]
+                query_offset = stop
+                query_chunks.append(flat)
+                hypothesis_specs.append((
+                    count, count_logit, count_probability,
+                    (start, stop), slots, roles
+                ))
+
+            task_specs.append((
+                task_index, tokens, task_type, fields, hypothesis_specs
+            ))
+
+        direct_logits = None
+        if query_chunks and length > 0:
+            queries = torch.cat(query_chunks, dim=0).unsqueeze(0)
+            direct_logits = self.model.span_rep.score_queries(
+                document_tokens.unsqueeze(0), queries, mask_invalid=True
+            )[0]
+
+        tasks: List[TaskLattice] = []
+        for task_index, tokens, task_type, fields, hypothesis_specs in task_specs:
+            count_scores: List[CountHypothesis] = []
+            for (
+                count, count_logit, count_probability, query_slice, slots, roles
+            ) in hypothesis_specs:
+                if count <= 0 or query_slice is None:
+                    role_logits = document_tokens.new_empty(
+                        (0, len(fields), length, width)
+                    )
                 else:
-                    projected = self.model.count_embed(embs[1:], count)
-                    role_logits = torch.einsum("lkd,bpd->bplk", dense_rep, projected)
-                    # Preserve the dense shape but make synthetic/padded spans
-                    # impossible for downstream optimizers to select.
-                    role_logits = role_logits.masked_fill(~valid.unsqueeze(0).unsqueeze(0), -torch.inf)
+                    start, stop = query_slice
+                    role_logits = direct_logits[start:stop].reshape(
+                        slots, roles, length, width
+                    )
                 count_scores.append(CountHypothesis(
                     count=count,
                     logit=count_logit,
@@ -720,6 +765,7 @@ class RawScorer:
                     role_logits=role_logits,
                     role_probabilities=torch.sigmoid(role_logits),
                 ))
+
             tasks.append(TaskLattice(
                 name=_task_name(tokens, f"task_{task_index}"),
                 task_type=task_type,
