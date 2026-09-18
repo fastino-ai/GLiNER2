@@ -41,9 +41,12 @@ class CompileSafeGRU(nn.Module):
         if seq_len == 0:
             return x.new_empty(0, h.shape[0], self.hidden_size)
 
+        # x-side projection does not depend on h, so one matmul covers all T.
+        # The loop bound stays seq_len so this remains as traceable as before.
+        gi_all = F.linear(x, self.weight_ih_l0, self.bias_ih_l0)
         outputs = []
         for t in range(seq_len):
-            gi = F.linear(x[t], self.weight_ih_l0, self.bias_ih_l0)
+            gi = gi_all[t]
             gh = F.linear(h, self.weight_hh_l0, self.bias_hh_l0)
 
             i_r, i_z, i_n = gi.chunk(3, dim=-1)

@@ -288,7 +288,6 @@ class Schema:
             "labels": label_names,
             "multi_label": multi_label,
             "cls_threshold": cls_threshold,
-            "true_label": ["N/A"],
             **kwargs,
         }
         if label_descs:

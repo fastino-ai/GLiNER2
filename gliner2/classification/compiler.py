@@ -56,7 +56,6 @@ def _classification_entry(spec: TaskSpec) -> dict:
     entry = {
         "task": spec.name,
         "labels": list(spec.label_names),
-        "true_label": ["N/A"],  # MANDATORY: read unconditionally
         "multi_label": not spec.is_exclusive,
         "cls_threshold": spec.threshold,
         "class_act": spec.activation,
@@ -99,13 +98,11 @@ def _assert_model_schema(model: dict) -> None:
         task = entry.get("task")
         if not isinstance(task, str) or not task:
             raise SchemaError("classification entry has an invalid 'task'")
-        for required in ("labels", "true_label", "multi_label", "cls_threshold", "class_act"):
+        for required in ("labels", "multi_label", "cls_threshold", "class_act"):
             if required not in entry:
                 raise SchemaError(f"classification task {task!r} is missing {required!r}")
         if not isinstance(entry["labels"], list) or not entry["labels"]:
             raise SchemaError(f"classification task {task!r} has invalid 'labels'")
-        if entry["true_label"] != ["N/A"]:
-            raise SchemaError(f"classification task {task!r} must emit true_label ['N/A']")
         if not isinstance(entry["multi_label"], bool):
             raise SchemaError(f"classification task {task!r} has non-bool 'multi_label'")
 

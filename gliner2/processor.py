@@ -14,6 +14,7 @@ from typing import Any, Dict, Tuple, List, Optional
 import torch
 from transformers import AutoTokenizer
 
+from gliner2.classification.errors import SchemaError
 from gliner2.processing.word_splitter import (  # noqa: F401 - public re-exports
     CharLevelSplitter,
     WhitespaceTokenSplitter,
@@ -380,7 +381,9 @@ class SchemaTransformer:
             PreprocessedBatch ready for model.forward()
         """
         self.is_training = True
-        result = self._collate_batch(batch, max_len=max_len, error_policy=error_policy)
+        result = self._collate_batch(
+            batch, max_len=max_len, error_policy=error_policy, build_targets=True
+        )
         return self._add_boundary_metadata(
             result,
             architecture,
@@ -422,7 +425,9 @@ class SchemaTransformer:
             PreprocessedBatch for batch_extract
         """
         self.is_training = False
-        result = self._collate_batch(batch, max_len=max_len, error_policy=error_policy)
+        result = self._collate_batch(
+            batch, max_len=max_len, error_policy=error_policy, build_targets=bool(build_targets)
+        )
         return self._add_boundary_metadata(
             result,
             architecture,
@@ -473,7 +478,33 @@ class SchemaTransformer:
         batch.record_specs = record_specs
         return batch
 
-    def transform_and_format(self, text: str, schema: Dict[str, Any]) -> TransformedRecord:
+    def transform_record(
+        self, text: str, schema: Any, max_len: Optional[int] = None, *, build_targets: bool = False
+    ) -> TransformedRecord:
+        """Public single-record transform.
+
+        Returns the same ``TransformedRecord`` as the collate path, so a
+        server can preprocess one request without calling a private method.
+
+        Args:
+            text: Input text.
+            schema: Schema dict, or an object with ``build()`` / ``schema``.
+            max_len: Optional word-token cap, matching ``collate_fn_inference``.
+            build_targets: When True, classification gold must include ``true_label``.
+
+        Returns:
+            TransformedRecord ready for batching or serving.
+        """
+        if hasattr(schema, "build"):
+            schema = schema.build()
+        elif hasattr(schema, "schema"):
+            schema = schema.schema
+        record = {"text": text, "schema": copy.deepcopy(schema)}
+        return self._transform_record(record, max_len=max_len, build_targets=build_targets)
+
+    def transform_and_format(
+        self, text: str, schema: Dict[str, Any], *, build_targets: bool = False
+    ) -> TransformedRecord:
         """
         Transform and format a single record.
 
@@ -483,12 +514,12 @@ class SchemaTransformer:
         Args:
             text: Input text
             schema: Schema dictionary
+            build_targets: When True, classification gold must include ``true_label``.
 
         Returns:
             TransformedRecord ready for batching
         """
-        record = {"text": text, "schema": copy.deepcopy(schema)}
-        return self._transform_record(record)
+        return self.transform_record(text, schema, build_targets=build_targets)
 
     # =========================================================================
     # Internal: Batch Processing
@@ -499,6 +530,8 @@ class SchemaTransformer:
         batch: List[Tuple[str, Any]],
         max_len: Optional[int] = None,
         error_policy: str = "raise",
+        *,
+        build_targets: bool = False,
     ) -> PreprocessedBatch:
         """Internal collate implementation.
 
@@ -529,7 +562,9 @@ class SchemaTransformer:
             record = {"text": text, "schema": copy.deepcopy(schema)}
 
             try:
-                transformed = self._transform_record(record, max_len=max_len)
+                transformed = self._transform_record(
+                    record, max_len=max_len, build_targets=build_targets
+                )
                 transformed_records.append(transformed)
             except Exception as exc:
                 if error_policy == "raise":
@@ -552,7 +587,7 @@ class SchemaTransformer:
         return self._pad_batch(transformed_records)
 
     def _transform_record(
-        self, record: Dict[str, Any], max_len: Optional[int] = None
+        self, record: Dict[str, Any], max_len: Optional[int] = None, *, build_targets: bool = False
     ) -> TransformedRecord:
         """Transform a single record (internal).
 
@@ -599,8 +634,9 @@ class SchemaTransformer:
         # Infer schema
         processed = self._infer_from_json(schema)
 
-        # Build outputs
-        results = self._build_outputs(processed, schema, text_tokens, len_prefix)
+        results = self._build_outputs(
+            processed, schema, text_tokens, len_prefix, build_targets=build_targets
+        )
 
         # Format input
         schema_tokens_list = [r["schema_tokens"] for r in results]
@@ -1040,7 +1076,10 @@ class SchemaTransformer:
                 if random.random() < sampling.swap_head_tail_prob:
                     idx_h = field_names.index("head")
                     idx_t = field_names.index("tail")
-                    field_names[idx_h], field_names[idx_t] = field_names[idx_t], field_names[idx_h]
+                    field_names[idx_h], field_names[idx_t] = (
+                        field_names[idx_t],
+                        field_names[idx_h],
+                    )
 
             spans = []
             for occ in occurrences:
@@ -1138,10 +1177,13 @@ class SchemaTransformer:
             )
             types.append("classifications")
 
-            # Update schema
             schema["classifications"][idx]["labels"] = cls_labels
-            true_label = schema["classifications"][idx]["true_label"].copy()
-            schema["classifications"][idx]["true_label"] = [real2syn.get(i, i) for i in true_label]
+            if real2syn:
+                true_label = schema["classifications"][idx].get("true_label")
+                if true_label is not None:
+                    schema["classifications"][idx]["true_label"] = [
+                        real2syn.get(i, i) for i in true_label
+                    ]
             labels.append([])
 
     def _transform_schema(
@@ -1182,7 +1224,13 @@ class SchemaTransformer:
         return tokens
 
     def _build_outputs(
-        self, processed: Dict, schema: Dict, text_tokens: List[str], len_prefix: int
+        self,
+        processed: Dict,
+        schema: Dict,
+        text_tokens: List[str],
+        len_prefix: int,
+        *,
+        build_targets: bool = False,
     ) -> List[Dict]:
         """Build output labels for each schema."""
         results = []
@@ -1247,7 +1295,18 @@ class SchemaTransformer:
                 if cls_item is None:
                     raise ValueError(f"Missing classification for: {schema_tokens[2]}")
 
-                bool_labels = [1 if l in cls_item["true_label"] else 0 for l in cls_item["labels"]]
+                label_names = cls_item["labels"]
+                if not build_targets:
+                    bool_labels = [0] * len(label_names)
+                else:
+                    if "true_label" not in cls_item:
+                        raise SchemaError(
+                            f"classification task {cls_item.get('task')!r} is missing true_label"
+                        )
+                    true_label = cls_item["true_label"]
+                    if not isinstance(true_label, list):
+                        true_label = [true_label]
+                    bool_labels = [1 if name in true_label else 0 for name in label_names]
                 results.append(
                     {"task_type": task_type, "schema_tokens": schema_tokens, "output": bool_labels}
                 )

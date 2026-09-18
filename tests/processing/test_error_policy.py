@@ -11,16 +11,15 @@ def _processor(tiny_tokenizer):
     return SchemaTransformer(tokenizer=tiny_tokenizer)
 
 
-# A classification item missing ``true_label`` triggers an exception deep in
-# record transformation, exercising the error policy deterministically.
-_BAD = ("hello world", {"classifications": [{"task": "t", "labels": ["a", "b"]}]})
+# A classification item missing ``labels`` is malformed at inference and training.
+_BAD = ("hello world", {"classifications": [{"task": "t"}]})
 _GOOD = ("hello world", {"entities": {"company": "companies"}})
 
 
 def test_training_collator_raises_on_invalid_annotation(tiny_tokenizer):
     proc = _processor(tiny_tokenizer)
     with pytest.raises(Exception):
-        proc.collate_fn_inference([_BAD], error_policy="raise")
+        proc.collate_fn_train([_BAD], error_policy="raise")
 
 
 def test_skip_policy_drops_bad_record(tiny_tokenizer):

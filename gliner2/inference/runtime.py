@@ -35,11 +35,181 @@ from gliner2.processor import PreprocessedBatch
 from gliner2.inference.chunking import merge_chunk_results, split_text_into_chunks
 from gliner2.processing.word_splitter import word_splitter_from
 from gliner2.inference.overlap import normalize_overlap_policy
-from gliner2.training.trainer import ExtractorCollator
 from gliner2.inference.candidate_decoder import finalize_spans
 
 if TYPE_CHECKING:
     from gliner2.api_client import GLiNER2API
+
+
+def _is_score(value: object) -> bool:
+    """True for a confidence scalar, excluding bools."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _format_classification(value: object, include_confidence: bool) -> object:
+    """Format a single- or multi-label classification, including JSON lists.
+
+    Args:
+        value: ``(label, score)``, JSON ``[label, score]``, or a list of pairs.
+        include_confidence: When True, keep scores on the public payload.
+
+    Returns:
+        A label, a ``{label, confidence}`` dict, or a list of those.
+    """
+    if isinstance(value, (list, tuple)) and value:
+        first = value[0]
+        if isinstance(first, (list, tuple)):
+            if include_confidence:
+                return [{"label": item[0], "confidence": item[1]} for item in value]
+            return [item[0] for item in value]
+        # A pair is only a (label, score) if the score is numeric; a
+        # two-label list stays a list.
+        if len(value) == 2 and isinstance(first, str) and _is_score(value[1]):
+            label, conf = value
+            return {"label": label, "confidence": conf} if include_confidence else label
+    return value
+
+
+def format_results(
+    results: Dict,
+    include_confidence: bool = False,
+    requested_relations: Optional[List[str]] = None,
+    classification_tasks: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Format extraction results into the public AutoExtractor payload."""
+    formatted = {}
+    relations = {}
+    requested_relations = requested_relations or []
+    classification_tasks = classification_tasks or []
+
+    for key, value in results.items():
+        is_classification = key in classification_tasks
+        is_relation = False
+
+        if not is_classification:
+            if key in requested_relations:
+                is_relation = True
+            elif isinstance(value, list) and len(value) > 0:
+                if isinstance(value[0], tuple) and len(value[0]) == 2:
+                    is_relation = True
+                elif isinstance(value[0], dict) and "head" in value[0] and "tail" in value[0]:
+                    is_relation = True
+
+        if is_classification:
+            formatted[key] = _format_classification(value, include_confidence)
+        elif is_relation:
+            relations[key] = value if isinstance(value, list) else []
+        elif isinstance(value, list):
+            if len(value) == 0:
+                formatted[key] = {} if key == "entities" else value
+            elif isinstance(value[0], dict):
+                if key == "entities":
+                    formatted[key] = format_entity_dict(value[0], include_confidence)
+                else:
+                    formatted[key] = [format_struct(v, include_confidence) for v in value]
+            elif isinstance(value[0], tuple):
+                if include_confidence:
+                    formatted[key] = [{"label": l, "confidence": c} for l, c in value]
+                else:
+                    formatted[key] = [l for l, _ in value]
+            else:
+                formatted[key] = value
+        elif isinstance(value, tuple):
+            label, conf = value
+            formatted[key] = {"label": label, "confidence": conf} if include_confidence else label
+        elif isinstance(value, dict):
+            formatted[key] = format_struct(value, include_confidence)
+        else:
+            formatted[key] = value
+
+    for rel in requested_relations:
+        if rel not in relations:
+            relations[rel] = []
+
+    if relations:
+        formatted["relation_extraction"] = relations
+
+    return formatted
+
+
+def format_entity_dict(entities: Dict, include_confidence: bool) -> Dict:
+    """Deduplicate and optionally keep confidence on an entity-type map."""
+    formatted = {}
+    for name, spans in entities.items():
+        if isinstance(spans, list):
+            unique = []
+            seen = set()
+            for span in spans:
+                if isinstance(span, tuple):
+                    text, conf, start, end = span
+                    if text and (text.lower(), start, end) not in seen:
+                        seen.add((text.lower(), start, end))
+                        unique.append(
+                            {"text": text, "confidence": conf} if include_confidence else text
+                        )
+                elif isinstance(span, dict):
+                    text = span.get("text", "")
+                    if "start" in span and "end" in span:
+                        key = (text.lower(), span["start"], span["end"])
+                    else:
+                        key = (text.lower(), None, None)
+                    if text and key not in seen:
+                        seen.add(key)
+                        unique.append(span)
+                else:
+                    if span and span.lower() not in seen:
+                        seen.add(span.lower())
+                        unique.append(span)
+            formatted[name] = unique
+        elif isinstance(spans, tuple):
+            text, conf, _, _ = spans
+            formatted[name] = (
+                {"text": text, "confidence": conf} if include_confidence and text else text
+            )
+        else:
+            formatted[name] = spans or None
+    return formatted
+
+
+def format_struct(struct: Dict, include_confidence: bool) -> Dict:
+    """Deduplicate and optionally keep confidence on a structure instance."""
+    formatted = {}
+    for field, value in struct.items():
+        if isinstance(value, list):
+            unique = []
+            seen = set()
+            for v in value:
+                if isinstance(v, tuple):
+                    text, conf, start, end = v
+                    if text and (text.lower(), start, end) not in seen:
+                        seen.add((text.lower(), start, end))
+                        unique.append(
+                            {"text": text, "confidence": conf} if include_confidence else text
+                        )
+                elif isinstance(v, dict):
+                    text = v.get("text", "")
+                    if "start" in v and "end" in v:
+                        key = (text.lower(), v["start"], v["end"])
+                    else:
+                        key = (text.lower(), None, None)
+                    if text and key not in seen:
+                        seen.add(key)
+                        unique.append(v)
+                else:
+                    if v and v.lower() not in seen:
+                        seen.add(v.lower())
+                        unique.append(v)
+            formatted[field] = unique
+        elif isinstance(value, tuple):
+            text, conf, _, _ = value
+            formatted[field] = (
+                {"text": text, "confidence": conf} if include_confidence and text else text
+            )
+        elif value:
+            formatted[field] = value
+        else:
+            formatted[field] = None
+    return formatted
 
 
 class ExtractorRuntimeMixin:
@@ -115,6 +285,9 @@ class ExtractorRuntimeMixin:
         dataset = list(zip(texts, schema_dicts))
 
         from torch.utils.data import DataLoader
+
+        # Lazy: trainer.py imports peft, which serving images do not install.
+        from gliner2.training.trainer import ExtractorCollator
 
         if max_len is None:
             if getattr(self, "_inference_collator", None) is None:
@@ -217,16 +390,6 @@ class ExtractorRuntimeMixin:
                     "entity_attribute_groups": {},
                     "entity_attribute_prompt_labels": {},
                     "entity_attribute_labels": set(),
-                }
-
-            classifications = schema_dict.get("classifications")
-            if classifications and any("true_label" not in c for c in classifications):
-                schema_dict = {
-                    **schema_dict,
-                    "classifications": [
-                        c if "true_label" in c else {**c, "true_label": ["N/A"]}
-                        for c in classifications
-                    ],
                 }
 
             schema_dicts.append(schema_dict)
@@ -1056,158 +1219,22 @@ class ExtractorRuntimeMixin:
         self,
         results: Dict,
         include_confidence: bool = False,
-        requested_relations: List[str] = None,
-        classification_tasks: List[str] = None,
+        requested_relations: Optional[List[str]] = None,
+        classification_tasks: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Format extraction results."""
-        formatted = {}
-        relations = {}
-        requested_relations = requested_relations or []
-        classification_tasks = classification_tasks or []
-
-        for key, value in results.items():
-            is_classification = key in classification_tasks
-            is_relation = False
-
-            if not is_classification:
-                if key in requested_relations:
-                    is_relation = True
-                elif isinstance(value, list) and len(value) > 0:
-                    if isinstance(value[0], tuple) and len(value[0]) == 2:
-                        is_relation = True
-                    elif isinstance(value[0], dict) and "head" in value[0] and "tail" in value[0]:
-                        is_relation = True
-
-            if is_classification:
-                if isinstance(value, list):
-                    if include_confidence:
-                        formatted[key] = [{"label": l, "confidence": c} for l, c in value]
-                    else:
-                        formatted[key] = [l for l, _ in value]
-                elif isinstance(value, tuple):
-                    label, conf = value
-                    formatted[key] = (
-                        {"label": label, "confidence": conf} if include_confidence else label
-                    )
-                else:
-                    formatted[key] = value
-            elif is_relation:
-                if isinstance(value, list):
-                    relations[key] = value
-                else:
-                    relations[key] = []
-            elif isinstance(value, list):
-                if len(value) == 0:
-                    if key == "entities":
-                        formatted[key] = {}
-                    else:
-                        formatted[key] = value
-                elif isinstance(value[0], dict):
-                    if key == "entities":
-                        formatted[key] = self._format_entity_dict(value[0], include_confidence)
-                    else:
-                        formatted[key] = [self._format_struct(v, include_confidence) for v in value]
-                elif isinstance(value[0], tuple):
-                    if include_confidence:
-                        formatted[key] = [{"label": l, "confidence": c} for l, c in value]
-                    else:
-                        formatted[key] = [l for l, _ in value]
-                else:
-                    formatted[key] = value
-            elif isinstance(value, tuple):
-                label, conf = value
-                formatted[key] = (
-                    {"label": label, "confidence": conf} if include_confidence else label
-                )
-            elif isinstance(value, dict):
-                formatted[key] = self._format_struct(value, include_confidence)
-            else:
-                formatted[key] = value
-
-        for rel in requested_relations:
-            if rel not in relations:
-                relations[rel] = []
-
-        if relations:
-            formatted["relation_extraction"] = relations
-
-        return formatted
+        return format_results(
+            results,
+            include_confidence=include_confidence,
+            requested_relations=requested_relations,
+            classification_tasks=classification_tasks,
+        )
 
     def _format_entity_dict(self, entities: Dict, include_confidence: bool) -> Dict:
-        formatted = {}
-        for name, spans in entities.items():
-            if isinstance(spans, list):
-                unique = []
-                seen = set()
-                for span in spans:
-                    if isinstance(span, tuple):
-                        text, conf, start, end = span
-                        if text and (text.lower(), start, end) not in seen:
-                            seen.add((text.lower(), start, end))
-                            unique.append(
-                                {"text": text, "confidence": conf} if include_confidence else text
-                            )
-                    elif isinstance(span, dict):
-                        text = span.get("text", "")
-                        if "start" in span and "end" in span:
-                            key = (text.lower(), span["start"], span["end"])
-                        else:
-                            key = (text.lower(), None, None)
-                        if text and key not in seen:
-                            seen.add(key)
-                            unique.append(span)
-                    else:
-                        if span and span.lower() not in seen:
-                            seen.add(span.lower())
-                            unique.append(span)
-                formatted[name] = unique
-            elif isinstance(spans, tuple):
-                text, conf, _, _ = spans
-                formatted[name] = (
-                    {"text": text, "confidence": conf} if include_confidence and text else text
-                )
-            else:
-                formatted[name] = spans or None
-        return formatted
+        return format_entity_dict(entities, include_confidence)
 
     def _format_struct(self, struct: Dict, include_confidence: bool) -> Dict:
-        formatted = {}
-        for field, value in struct.items():
-            if isinstance(value, list):
-                unique = []
-                seen = set()
-                for v in value:
-                    if isinstance(v, tuple):
-                        text, conf, start, end = v
-                        if text and (text.lower(), start, end) not in seen:
-                            seen.add((text.lower(), start, end))
-                            unique.append(
-                                {"text": text, "confidence": conf} if include_confidence else text
-                            )
-                    elif isinstance(v, dict):
-                        text = v.get("text", "")
-                        if "start" in v and "end" in v:
-                            key = (text.lower(), v["start"], v["end"])
-                        else:
-                            key = (text.lower(), None, None)
-                        if text and key not in seen:
-                            seen.add(key)
-                            unique.append(v)
-                    else:
-                        if v and v.lower() not in seen:
-                            seen.add(v.lower())
-                            unique.append(v)
-                formatted[field] = unique
-            elif isinstance(value, tuple):
-                text, conf, _, _ = value
-                formatted[field] = (
-                    {"text": text, "confidence": conf} if include_confidence and text else text
-                )
-            elif value:
-                formatted[field] = value
-            else:
-                formatted[field] = None
-        return formatted
+        return format_struct(struct, include_confidence)
 
     # =========================================================================
     # Convenience Methods (route through batch)
