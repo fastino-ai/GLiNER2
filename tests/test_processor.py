@@ -155,6 +155,25 @@ class TestWhitespaceTokenSplitter:
         emails = [t[0] for t in tokens if "@" in t[0] and "." in t[0]]
         assert len(emails) == 1
 
+    def test_cjk_run_splits_into_individual_characters(self):
+        """Regression: `\\w+` matches CJK characters too, so a whole CJK
+        sentence used to come back as one token. That makes an entity inside
+        it, like the trailing two characters of a longer sentence, an
+        unmatchable subsequence, which is what broke CJK training with a
+        misleading "entity was not found" error.
+        """
+        splitter = WhitespaceTokenSplitter()
+        text = "中国国家主席访问美国"
+        tokens = list(splitter(text, lower=False))
+        assert [t[0] for t in tokens] == list(text)
+        for tok, start, end in tokens:
+            assert text[start:end] == tok
+
+    def test_cjk_and_latin_do_not_merge(self):
+        splitter = WhitespaceTokenSplitter()
+        tokens = list(splitter("Hello 世界", lower=False))
+        assert [t[0] for t in tokens] == ["Hello", "世", "界"]
+
 
 class TestCharLevelSplitter:
     def test_keeps_latin_words_together(self):
