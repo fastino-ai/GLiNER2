@@ -22,10 +22,26 @@ class WhitespaceTokenSplitter:
 
     __slots__ = ()
 
+    # CJK scripts have no inter-word whitespace, so `\w+` would otherwise
+    # swallow a whole run of CJK characters as a single token, which makes
+    # per-character entity spans inside that run unalignable (see the
+    # CJK-training issue this branch fixes). Matching one CJK character at a
+    # time, before the generic word branch gets a chance to, keeps every
+    # other case (URLs, emails, Latin words, punctuation) exactly as before.
+    _CJK_RANGES = (
+        r"一-鿿"  # CJK Unified Ideographs
+        r"぀-ゟ"  # Hiragana
+        r"゠-ヿ"  # Katakana
+        r"가-힣"  # Hangul syllables
+    )
+
     _PATTERN = re.compile(
         r"""(?:https?://[^\s]+|www\.[^\s]+)
         |[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}
         |@[a-z0-9_]+
+        |["""
+        + _CJK_RANGES
+        + r"""]
         |\w+(?:[-_]\w+)*
         |\S""",
         re.VERBOSE | re.IGNORECASE,
