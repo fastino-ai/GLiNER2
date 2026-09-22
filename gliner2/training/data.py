@@ -870,6 +870,37 @@ class InputExample:
                     if is_valid:
                         valid_fields[field_name] = value
                 
+                # An anchored structure must keep the field its record metadata names.
+                #
+                # `record_metadata` is a DECLARATION -- it names the anchor field -- while
+                # the loop above edits GOLD. Dropping a field the declaration names leaves
+                # a structure whose anchor points at nothing, and
+                # `compile_record_specs` then raises:
+                #
+                #   record 'record' declares anchor 'type' but no matching field query
+                #   was found in the layout
+                #
+                # aborting training in a DataLoader worker. It only bites when records are
+                # validated (`validate=True`), which is why it can lie dormant.
+                #
+                # The quieter case matters as much: `get_record_metadata` defaults a
+                # natural-mode anchor to the FIRST declared field, so reassigning
+                # `_fields` below would silently RE-POINT a defaulted anchor at whatever
+                # field now happens to be first -- no error, and the record trains against
+                # a different anchor than it declares.
+                #
+                # Resolve the anchor exactly as `get_record_metadata` will, before
+                # mutating, and drop the structure if that field did not survive.
+                anchor = struct.anchor
+                if struct.mode == "natural" and not anchor:
+                    anchor = next(iter(struct._fields), None)
+                if struct.mode and anchor is not None and anchor not in valid_fields:
+                    warnings.append(
+                        f"Structure '{struct.struct_name}' lost its anchor field "
+                        f"'{anchor}' during sanitization - dropping the whole structure"
+                    )
+                    continue
+
                 # Only keep structure if it has at least one valid field
                 if valid_fields:
                     struct._fields = valid_fields
