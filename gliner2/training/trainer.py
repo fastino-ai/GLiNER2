@@ -1534,7 +1534,12 @@ class ExtractorTrainer:
         )
         # macOS spawn must pickle the tokenizer-bearing collator; fast
         # tokenizers may contain non-picklable cached callables.
-        if self.device.type == "mps" or sys.platform == "darwin":
+        # MPS keeps num_workers=0: that is a device question about shared-memory
+        # tensors, not a pickling one. macOS no longer needs it -- the processor's
+        # only unpicklable attribute was a functools.lru_cache wrapper, which
+        # __getstate__/__setstate__ now drop and rebuild, so a spawned worker can
+        # receive the collator.
+        if self.device.type == "mps":
             effective_num_workers = 0
 
         return DataLoader(

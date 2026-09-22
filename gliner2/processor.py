@@ -335,6 +335,28 @@ class SchemaTransformer:
         # redundant work. Per-instance, thread-safe (functools.lru_cache).
         self._tokenize_cached = lru_cache(maxsize=_TOKENIZE_CACHE_SIZE)(self.tokenizer.tokenize)
 
+    def __getstate__(self):
+        """Drop the per-instance tokenize memo, which cannot be pickled.
+
+        `_tokenize_cached` is a `functools.lru_cache` wrapper, and those are never
+        picklable. It is the only unpicklable attribute on this class -- the fast
+        tokenizer itself pickles fine -- and it is what stops a DataLoader from
+        using workers wherever the collator must be pickled to reach them
+        (`spawn`, and `forkserver`, which became Linux's default in Python 3.14).
+
+        Dropping it is safe: it is pure memoisation of a deterministic function,
+        so a rebuilt cache produces identical output and only has to refill.
+        """
+        state = self.__dict__.copy()
+        state.pop("_tokenize_cached", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._tokenize_cached = lru_cache(maxsize=_TOKENIZE_CACHE_SIZE)(
+            self.tokenizer.tokenize
+        )
+
     def change_mode(self, is_training: bool):
         """Switch between training and inference mode."""
         self.is_training = is_training
