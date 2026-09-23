@@ -24,12 +24,18 @@ def task_probabilities(spec, logits) -> dict:
 
 
 def retain(spec, logits, *, candidate_threshold, cap, rescued) -> frozenset:
-    """Keep labels above the retention floor, plus every rescued label.
+    """Keep the labels the task retains unconstrained, plus every rescued label.
+
+    Unconstrained retention is the top ``cap`` labels above the retention floor,
+    or every label when fewer than ``min_labels`` clear it (an exclusive task
+    whose argmax sits below the floor still needs its argmax).
 
     ``rescued`` = every label named in a constraint's ``label_references()`` for
-    this task. Two consequences: a hard constraint can always force a
-    below-threshold label, and the cap can never evict a rescued label (which
-    would manufacture infeasibility). Direct analogue of joint IE's endpoint
+    this task. Rescue only ever adds: a hard constraint can always force a
+    below-threshold label, the cap can never evict a rescued label (which would
+    manufacture infeasibility), and a rescued label can never displace an
+    unconstrained candidate, so a constraint the unconstrained optimum already
+    satisfies cannot change the decode. Direct analogue of joint IE's endpoint
     rescue.
     """
     rescued = frozenset(rescued)
@@ -38,11 +44,12 @@ def retain(spec, logits, *, candidate_threshold, cap, rescued) -> frozenset:
     finite = {l: v for l, v in logits.items() if math.isfinite(v)}
     probs = task_probabilities(spec, finite)
     utils = task_utilities(spec, finite)
-    keep = {l for l, p in probs.items() if p >= floor} | (rescued & set(finite))
+    keep = {l for l, p in probs.items() if p >= floor}
     if len(keep) > cap:
-        ranked = sorted(keep, key=lambda l: (l not in rescued, -utils[l], l))
-        keep = set(ranked[:max(cap, len(rescued & set(finite)))])
-    return frozenset(keep)
+        keep = set(sorted(keep, key=lambda l: (-utils[l], l))[:cap])
+    if len(keep) < spec.min_labels:
+        keep = set(finite)
+    return frozenset(keep | (rescued & set(finite)))
 
 
 @dataclass(frozen=True)

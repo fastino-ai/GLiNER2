@@ -72,6 +72,27 @@ def test_cap_never_evicts_rescued():
     assert {"c", "d"} <= kept  # cap smaller than rescued set, still kept
 
 
+@pytest.mark.parametrize("rescued", [{"c"}, {"a", "c"}, {"a", "b", "c"}])
+def test_rescue_only_adds_to_the_unconstrained_retention(rescued):
+    # Exclusive task, nothing clears the floor: the unconstrained set falls back
+    # to every label, and a rescued label must not suppress that fallback.
+    spec = _spec("t", ["a", "b", "c"], min_labels=1, max_labels=1, threshold=0.5)
+    logits = {"a": -0.04, "b": -1.9, "c": -3.9}
+    free = retain(spec, logits, candidate_threshold=0.5, cap=64, rescued=set())
+    kept = retain(spec, logits, candidate_threshold=0.5, cap=64, rescued=rescued)
+    assert free == frozenset({"a", "b", "c"})
+    assert kept == free
+
+
+def test_cap_never_evicts_an_unconstrained_candidate_for_a_rescued_one():
+    spec = _spec("t", ["a", "b", "c", "d"], threshold=0.5)
+    logits = {"a": 5.0, "b": 4.0, "c": -5.0, "d": -6.0}
+    free = retain(spec, logits, candidate_threshold=0.1, cap=1, rescued=set())
+    kept = retain(spec, logits, candidate_threshold=0.1, cap=1, rescued={"c"})
+    assert free == frozenset({"a"})
+    assert kept == frozenset({"a", "c"})
+
+
 # ---- T-D5b : separate thresholds; -inf skipped -------------------------
 
 def test_infinite_logit_is_skipped():
