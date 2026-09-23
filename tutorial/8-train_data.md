@@ -200,10 +200,18 @@ Both formats are supported - use list for consistency or string for brevity:
 {"input": "Alice, Bob, and Charlie attended the meeting with David.", "output": {"entities": {"person": ["Alice", "Bob", "Charlie", "David"]}}}
 ```
 
-### NER with Empty Entity Types
+### NER with Empty Entity Types (Negative Examples)
+
+A type mapped to an empty list is a negative: the model is trained that this text contains no mention of that type. This is how to add realistic negatives and near-match negatives. A negative row must still declare the types it is negative for.
 
 ```jsonl
 {"input": "The conference will be held next week.", "output": {"entities": {"person": [], "organization": [], "location": []}}}
+```
+
+Every type in `entity_descriptions` is part of the row's label set, so a described type with no mentions is treated the same way. Supplying the same descriptions on every row therefore declares the full label set, and rows without mentions become negatives for it:
+
+```jsonl
+{"input": "I meant the vertex pulse in the graph editor, not a product.", "output": {"entities": {}, "entity_descriptions": {"product": "Vendor software product names", "version": "Software version identifiers"}}}
 ```
 
 ### Partial NER (Some Entity Types Present)
@@ -463,7 +471,7 @@ This format will fail validation. Each example must contain at least one annotat
 
 ### Empty Entities Dictionary
 
-**⚠️ Note**: While an empty entities dictionary is syntactically valid, examples must have at least one task. If you only have empty entities, add at least one other task (classification, structure, or relation).
+**⚠️ Note**: An empty entities dictionary declares no entity types, so it is not a task on its own. To use the text as an NER negative, declare the types it is negative for (`{"entities": {"person": []}}`) or supply `entity_descriptions` for them; otherwise add at least one other task (classification, structure, or relation).
 
 ```jsonl
 {"input": "The weather is nice today.", "output": {"entities": {}, "classifications": [{"task": "sentiment", "labels": ["positive", "negative"], "true_label": ["positive"]}]}}
@@ -598,7 +606,7 @@ This format will fail validation. Each example must contain at least one annotat
 4. **Balance your classes** in classification tasks
 5. **Use realistic text** that matches your target domain
 6. **Include multiple instances** for JSON structures when applicable
-7. **For negative examples**, include at least one task (e.g., empty entities but a classification, or empty classifications but entities)
+7. **For negative examples**, declare the labels the text is negative for (e.g., `{"entities": {"person": []}}`, or `entity_descriptions` for every label), or pair them with another task
 8. **Mix task types** to train multi-task capabilities
 9. **Use consistent formatting** for similar examples
 10. **Include special characters** to ensure robust handling
