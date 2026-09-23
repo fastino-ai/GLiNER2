@@ -15,7 +15,28 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Pattern, Union
 
+from pydantic import BaseModel
+
 from gliner2.inference.schema_model import SchemaInput
+
+
+def _configs_to_builder(
+    value: Union[List[str], Dict[str, Union[str, BaseModel]]],
+) -> Union[List[str], Dict[str, Union[str, Dict[str, Any]]]]:
+    """Turn validated entity/relation configs into the builder's dict form."""
+    if isinstance(value, list):
+        return value
+    return {
+        name: config.model_dump(exclude_none=True) if isinstance(config, BaseModel) else config
+        for name, config in value.items()
+    }
+
+
+def _compact_config(config: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
+    """Collapse a description-only config to its description string."""
+    if set(config) == {"description"}:
+        return config["description"]
+    return config
 
 
 # =============================================================================
@@ -273,12 +294,33 @@ class Schema:
         labels: Union[List[str], Dict[str, str]],
         multi_label: bool = False,
         cls_threshold: float = 0.5,
+        top_k: Optional[int] = None,
         **kwargs,
     ) -> "Schema":
-        """Add classification task."""
+        """Add classification task.
+
+        Args:
+            task: Task name.
+            labels: Label names, or a mapping of label name to description.
+            multi_label: Allow more than one label.
+            cls_threshold: Multi-label selection cutoff in [0, 1].
+            top_k: Keep at most this many labels, highest probability first.
+                Only multi-label tasks can return more than one label.
+            **kwargs: Extra task options (``class_act``, ``prompt``, ``examples``).
+
+        Returns:
+            This schema, for chaining.
+
+        Raises:
+            ValueError: ``cls_threshold`` is outside [0, 1] or ``top_k`` < 1.
+        """
         if self._active_builder:
             self._active_builder._auto_finish()
             self._active_builder = None
+        if not 0 <= cls_threshold <= 1:
+            raise ValueError(f"cls_threshold must be 0-1, got {cls_threshold}")
+        if top_k is not None and top_k < 1:
+            raise ValueError(f"top_k must be >= 1, got {top_k}")
 
         label_names = list(labels.keys()) if isinstance(labels, dict) else labels
         label_descs = labels if isinstance(labels, dict) else None
@@ -290,6 +332,8 @@ class Schema:
             "cls_threshold": cls_threshold,
             **kwargs,
         }
+        if top_k is not None:
+            config["top_k"] = top_k
         if label_descs:
             config["label_descriptions"] = label_descs
 
@@ -478,13 +522,14 @@ class Schema:
 
         Args:
             data: Dictionary with optional keys: entities, structures,
-                  classifications, relations
+                  classifications, relations, entity_attributes
 
         Returns:
             Schema: Constructed schema instance
 
         Raises:
-            ValidationError: If the input data is invalid
+            ValidationError: If the input data is invalid or has unknown keys
+            ValueError: If the builder rejects the validated schema
 
         Example:
             >>> schema_dict = {
@@ -509,7 +554,14 @@ class Schema:
         schema = cls()
 
         if validated.entities is not None:
-            schema.entities(validated.entities)
+            schema.entities(_configs_to_builder(validated.entities))
+            if validated.entity_attributes is not None:
+                schema.entity_attributes(
+                    {
+                        name: AttributeGroup(**group.model_dump())
+                        for name, group in validated.entity_attributes.items()
+                    }
+                )
 
         if validated.structures is not None:
             for struct_name, struct_input in validated.structures.items():
@@ -525,6 +577,7 @@ class Schema:
                         dtype=field_input.dtype,
                         choices=field_input.choices,
                         description=field_input.description,
+                        threshold=field_input.threshold,
                         cardinality=field_input.cardinality,
                         exclusive=field_input.exclusive,
                     )
@@ -532,12 +585,20 @@ class Schema:
 
         if validated.classifications is not None:
             for cls_input in validated.classifications:
+                extras = cls_input.model_dump(
+                    include={"class_act", "prompt", "examples"}, exclude_none=True
+                )
                 schema.classification(
-                    task=cls_input.task, labels=cls_input.labels, multi_label=cls_input.multi_label
+                    task=cls_input.task,
+                    labels=cls_input.labels,
+                    multi_label=cls_input.multi_label,
+                    cls_threshold=cls_input.cls_threshold,
+                    top_k=cls_input.top_k,
+                    **extras,
                 )
 
         if validated.relations is not None:
-            schema.relations(validated.relations)
+            schema.relations(_configs_to_builder(validated.relations))
 
         return schema
 
@@ -586,11 +647,38 @@ class Schema:
             self._active_builder = None
         result = {}
 
-        if self.schema["entities"]:
-            if self.schema["entity_descriptions"]:
-                result["entities"] = dict(self.schema["entity_descriptions"])
-            else:
-                result["entities"] = list(self.schema["entities"].keys())
+        if self._entity_order:
+            entity_configs = {}
+            for name in self._entity_order:
+                config = {}
+                description = self.schema["entity_descriptions"].get(name)
+                if description:
+                    config["description"] = description
+                metadata = self._entity_metadata.get(name, {})
+                if metadata.get("dtype", "list") != "list":
+                    config["dtype"] = metadata["dtype"]
+                if metadata.get("threshold") is not None:
+                    config["threshold"] = metadata["threshold"]
+                entity_configs[name] = config
+            result["entities"] = (
+                {name: _compact_config(c) for name, c in entity_configs.items()}
+                if any(entity_configs.values())
+                else list(self._entity_order)
+            )
+
+        if self._entity_attribute_groups:
+            result["entity_attributes"] = {}
+            for group_name, group in self._entity_attribute_groups.items():
+                group_def: Dict[str, Any] = {"labels": list(group.labels)}
+                if group.multi_label:
+                    group_def["multi_label"] = True
+                if group.threshold != 0.5:
+                    group_def["threshold"] = group.threshold
+                if group.applies_to is not None:
+                    group_def["applies_to"] = list(group.applies_to)
+                if group.qualify_labels:
+                    group_def["qualify_labels"] = True
+                result["entity_attributes"][group_name] = group_def
 
         if self.schema["json_structures"]:
             result["structures"] = {}
@@ -624,6 +712,9 @@ class Schema:
                         if desc:
                             field_def["description"] = desc
 
+                        if metadata.get("threshold") is not None:
+                            field_def["threshold"] = metadata["threshold"]
+
                         rec_fields = self._record_metadata.get(struct_name, {}).get("fields", {})
                         fmeta = rec_fields.get(field_name, {})
                         if fmeta.get("cardinality") is not None:
@@ -646,9 +737,20 @@ class Schema:
         if self.schema["classifications"]:
             result["classifications"] = []
             for cls_config in self.schema["classifications"]:
-                cls_def = {"task": cls_config["task"], "labels": cls_config["labels"]}
+                label_descs = cls_config.get("label_descriptions")
+                cls_def = {
+                    "task": cls_config["task"],
+                    "labels": dict(label_descs) if label_descs else list(cls_config["labels"]),
+                }
                 if cls_config.get("multi_label", False):
                     cls_def["multi_label"] = True
+                if cls_config.get("cls_threshold", 0.5) != 0.5:
+                    cls_def["cls_threshold"] = cls_config["cls_threshold"]
+                for key in ("top_k", "class_act", "prompt"):
+                    if cls_config.get(key) is not None:
+                        cls_def[key] = cls_config[key]
+                if cls_config.get("examples"):
+                    cls_def["examples"] = [list(pair) for pair in cls_config["examples"]]
                 result["classifications"].append(cls_def)
 
         if self.schema["relations"]:

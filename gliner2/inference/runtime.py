@@ -630,6 +630,9 @@ class ExtractorRuntimeMixin:
             if not chosen:
                 best = int(torch.argmax(probs).item())
                 chosen = [(labels[best], probs[best].item())]
+            top_k = cls_config.get("top_k")
+            if top_k is not None:
+                chosen = sorted(chosen, key=lambda pair: pair[1], reverse=True)[:top_k]
             results[schema_name] = chosen
         else:
             best = int(torch.argmax(probs).item())
