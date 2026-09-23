@@ -1258,8 +1258,8 @@ class BoundaryExtractorModel(BaseExtractorModel):
         use_dora: bool = False,
     ) -> "PeftModel":
         """Apply PEFT LoRA adapters and return the wrapped boundary model."""
-        from peft import LoraConfig as PeftLoraConfig, get_peft_model
         from gliner2.training.lora import _cast_lora_dtype, _resolve_targets
+        from peft import LoraConfig as PeftLoraConfig, get_peft_model
 
         base_id = (
             getattr(self, "name_or_path", "")

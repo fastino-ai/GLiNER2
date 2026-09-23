@@ -816,8 +816,8 @@ class SpanExtractorModel(BaseExtractorModel):
         Returns:
             PeftModel wrapping this Extractor.
         """
-        from peft import LoraConfig as PeftLoraConfig, get_peft_model
         from gliner2.training.lora import _resolve_targets, _cast_lora_dtype
+        from peft import LoraConfig as PeftLoraConfig, get_peft_model
 
         # Pin ``base_model_name_or_path`` up front so adapters saved via
         # ``PeftModel.save_pretrained`` always carry a concrete identifier

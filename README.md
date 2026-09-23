@@ -28,8 +28,10 @@ Fine-tune via [Fastino](https://fastino.ai). Join discussions on [Discord](https
 
 ## 🚀 Installation & Quick Start
 
-GLiNER2 requires Python 3.10 or newer. Choose the smallest install profile that
-matches your use case:
+GLiNER2 requires Python 3.10 or newer and is tested on Python 3.10 to 3.12. The
+`local`, `train`, and `benchmark` profiles install PyTorch, so they also need a
+Python version that PyTorch publishes wheels for. Choose the smallest install
+profile that matches your use case:
 
 ```bash
 # Schema validation, API client, training-data utilities — no torch required
