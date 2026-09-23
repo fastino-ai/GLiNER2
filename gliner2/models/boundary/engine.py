@@ -63,8 +63,9 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
         metadata_list: List[Dict],
         include_confidence: bool,
         include_spans: bool,
+        hidden_states: Optional[List[torch.Tensor]] = None,
     ) -> List[Dict[str, Any]]:
-        core = self._encode_core(batch)
+        core = self._encode_core(batch, hidden_states=hidden_states)
         has_queries = core["query_states"].shape[1] > 0
         candidates = None
         probs = None
