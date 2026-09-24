@@ -19,7 +19,7 @@ Use GLiNER2 through a cloud API without loading models locally. Perfect for prod
 
 ### Get Your API Key
 
-1. Visit [fastino.ai](https://fastino.ai)
+1. Visit [agent.fastino.ai](https://agent.fastino.ai)
 2. Sign up or log in to your account
 3. Navigate to API Keys section
 4. Generate a new API key
