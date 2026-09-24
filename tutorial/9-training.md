@@ -1053,7 +1053,7 @@ Everything above runs locally. If you'd rather not manage GPUs, the Fastino API 
 | | |
 |---|---|
 | Base URL | `https://api.fastino.ai` |
-| Auth | `X-API-Key: $FASTINO_API_KEY` (get a key at [fastino.ai](https://fastino.ai)) |
+| Auth | `X-API-Key: $FASTINO_API_KEY` (get a key at [agent.fastino.ai](https://agent.fastino.ai)) |
 | Request/response schemas | [`https://api.fastino.ai/openapi.json`](https://api.fastino.ai/openapi.json) |
 | Agent workflow | [`SKILL.md`](https://huggingface.co/fastino/gliner2.5-base-v1/blob/main/SKILL.md) (also shipped in each GLiNER model repo on Hugging Face) |
 
