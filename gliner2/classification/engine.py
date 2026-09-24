@@ -138,12 +138,30 @@ class Classifier:
         compiled = self.compile_schema(schema)
         return self.scorer.score(text, compiled, max_len=config.max_len)
 
+    def _compile_each(self, schema):
+        if isinstance(schema, (list, tuple)):
+            return [self.compile_schema(s) for s in schema]
+        return self.compile_schema(schema)
+
     @torch.inference_mode()
-    def batch_score(self, texts, schema, *, config: Optional[ClassificationConfig] = None):
+    def batch_score(self, texts, schema, *, config: Optional[ClassificationConfig] = None,
+                    hidden_states=None):
+        """Score texts against one schema or one schema per text.
+
+        Args:
+            texts: Input texts.
+            schema: A schema for every text, or a list with one per text.
+            config: Prediction controls.
+            hidden_states: Optional precomputed encoder output, one tensor per text.
+
+        Returns:
+            One ``ClassificationScores`` per text.
+        """
         config = config or ClassificationConfig()
-        compiled = self.compile_schema(schema)
-        return self.scorer.batch_score(texts, compiled, batch_size=config.batch_size,
-                                       max_len=config.max_len)
+        return self.scorer.batch_score(texts, self._compile_each(schema),
+                                       batch_size=config.batch_size,
+                                       max_len=config.max_len,
+                                       hidden_states=hidden_states)
 
     # ---- decoding ------------------------------------------------------
 
@@ -179,11 +197,28 @@ class Classifier:
 
     @torch.inference_mode()
     def batch_classify(self, texts, schema, *, active=None,
-                       config: Optional[ClassificationConfig] = None):
+                       config: Optional[ClassificationConfig] = None,
+                       hidden_states=None):
+        """Classify texts against one schema or one schema per text.
+
+        Args:
+            texts: Input texts.
+            schema: A schema for every text, or a list with one per text.
+            active: Optional subset of tasks to decode.
+            config: Prediction controls.
+            hidden_states: Optional precomputed encoder output, one tensor per text.
+
+        Returns:
+            One decoded classification result per text.
+        """
         config = config or ClassificationConfig()
-        scores_list = self.batch_score(texts, schema, config=config)
-        return [self.decode(scores, schema, active=active, config=config)
-                for scores in scores_list]
+        texts = list(texts)
+        compiled = self._compile_each(schema)
+        scores_list = self.batch_score(texts, compiled, config=config,
+                                       hidden_states=hidden_states)
+        per_text = compiled if isinstance(compiled, list) else [compiled] * len(texts)
+        return [self.decode(scores, one, active=active, config=config)
+                for scores, one in zip(scores_list, per_text, strict=True)]
 
     @torch.inference_mode()
     def classify_long(self, text: str, schema, *, active=None,

@@ -219,7 +219,22 @@ class JointIEEngine:
                                  relation_pair_cap=config.relation_pair_cap)
 
     def batch_score(self, texts: Sequence[str], schemas: Any, *,
-                    config: Optional[JointIEConfig] = None) -> List[Any]:
+                    config: Optional[JointIEConfig] = None,
+                    hidden_states: Optional[Sequence[torch.Tensor]] = None) -> List[Any]:
+        """Score texts against one schema or one schema per text.
+
+        Args:
+            texts: Input texts.
+            schemas: A schema for every text, or a list with one per text.
+            config: Prediction controls.
+            hidden_states: Optional precomputed encoder output, one tensor per text.
+
+        Returns:
+            One score lattice or candidate score set per text.
+
+        Raises:
+            ValueError: If ``schemas`` is a list of the wrong length.
+        """
         config = _coerce_config(config)
         texts = list(texts)
         if isinstance(schemas, (list, tuple)):
@@ -233,7 +248,8 @@ class JointIEEngine:
                                        max_len=config.max_len,
                                        count_top_k=config.count_top_k,
                                        top_k_roles=config.top_k_roles,
-                                       relation_pair_cap=config.relation_pair_cap)
+                                       relation_pair_cap=config.relation_pair_cap,
+                                       hidden_states=hidden_states)
 
     def _make_candidates(self, config: JointIEConfig) -> Any:
         component = self._candidate_component
@@ -364,7 +380,22 @@ class JointIEEngine:
 
     @torch.inference_mode()
     def batch_extract(self, texts: Sequence[str], schemas: Any, *,
-                      config: Optional[JointIEConfig] = None) -> List[Any]:
+                      config: Optional[JointIEConfig] = None,
+                      hidden_states: Optional[Sequence[torch.Tensor]] = None) -> List[Any]:
+        """Extract a joint result per text.
+
+        Args:
+            texts: Input texts.
+            schemas: A schema for every text, or a list with one per text.
+            config: Prediction controls.
+            hidden_states: Optional precomputed encoder output, one tensor per text.
+
+        Returns:
+            One decoded joint result per text.
+
+        Raises:
+            ValueError: If ``schemas`` is a list of the wrong length.
+        """
         config = _coerce_config(config)
         texts = list(texts)
         if isinstance(schemas, (list, tuple)):
@@ -376,7 +407,8 @@ class JointIEEngine:
             one = self.compile_schema(schemas)
             compiled = [one] * len(texts)
             scorer_schemas = one
-        lattices = self.batch_score(texts, scorer_schemas, config=config)
+        lattices = self.batch_score(texts, scorer_schemas, config=config,
+                                    hidden_states=hidden_states)
         return [self._decode(lattice, schema, config)
                 for lattice, schema in zip(lattices, compiled)]
 

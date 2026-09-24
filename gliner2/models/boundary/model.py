@@ -1121,7 +1121,23 @@ class BoundaryExtractorModel(BaseExtractorModel):
         tokenizer=None,
         use_flashdeberta: Optional[bool] = None,
         word_splitter=None,
+        load_encoder: bool = True,
     ):
+        """Build the boundary model.
+
+        Args:
+            config: Extractor config with ``architecture="boundary"``.
+            encoder_config: Encoder config; required when ``load_encoder`` is False.
+            tokenizer: Optional tokenizer; defaults to ``config.model_name``'s.
+            use_flashdeberta: Force the FlashDeBERTa backend on or off.
+            word_splitter: Optional word splitter name or callable.
+            load_encoder: When False, build heads only and set ``encoder`` to
+                ``None``; inference then requires ``hidden_states``.
+
+        Raises:
+            ValueError: On a non-boundary config, or ``load_encoder=False``
+                without ``encoder_config``.
+        """
         super().__init__(config)
         if config.architecture != "boundary":
             raise ValueError(
@@ -1144,14 +1160,20 @@ class BoundaryExtractorModel(BaseExtractorModel):
                 word_splitter=word_splitter,
             )
 
-        self.encoder = self._load_encoder(
-            config.model_name,
-            encoder_config,
-            getattr(config, "attn_implementation", "sdpa"),
-            use_flashdeberta=use_flashdeberta,
-        )
-        self.encoder.resize_token_embeddings(len(self.processor.tokenizer))
-        self.hidden_size = self.encoder.config.hidden_size
+        if load_encoder:
+            self.encoder = self._load_encoder(
+                config.model_name,
+                encoder_config,
+                getattr(config, "attn_implementation", "sdpa"),
+                use_flashdeberta=use_flashdeberta,
+            )
+            self.encoder.resize_token_embeddings(len(self.processor.tokenizer))
+            self.hidden_size = self.encoder.config.hidden_size
+        else:
+            if encoder_config is None:
+                raise ValueError("load_encoder=False requires encoder_config")
+            self.encoder = None
+            self.hidden_size = encoder_config.hidden_size
 
         self.classifier = create_mlp(
             input_dim=self.hidden_size,
@@ -1227,7 +1249,8 @@ class BoundaryExtractorModel(BaseExtractorModel):
         """Compile the backbone and tensor-heavy boundary regions in place."""
         if not hasattr(torch, "compile"):
             raise RuntimeError("BoundaryExtractorModel.compile requires torch.compile")
-        self.encoder = torch.compile(self.encoder, dynamic=dynamic)
+        if self.encoder is not None:
+            self.encoder = torch.compile(self.encoder, dynamic=dynamic)
         self.boundary_head.boundary_encoder = torch.compile(
             self.boundary_head.boundary_encoder, dynamic=dynamic
         )
@@ -1283,7 +1306,7 @@ class BoundaryExtractorModel(BaseExtractorModel):
     # Encoding
     # =========================================================================
 
-    def _encode_core(self, batch) -> Dict[str, Any]:
+    def _encode_core(self, batch, hidden_states=None) -> Dict[str, Any]:
         """Encode a ``PreprocessedBatch`` into padded states + query enumeration.
 
         Every extractive schema child (``[E]``/``[C]``/``[R]`` marker) becomes one
@@ -1292,11 +1315,17 @@ class BoundaryExtractorModel(BaseExtractorModel):
         ``structure_labels``. Classification schemas are enumerated separately and
         scored by the shared classifier. No fixed cross-sample query layout is
         required, so training-time task shuffling is handled naturally.
+
+        Args:
+            batch: The collated batch.
+            hidden_states: Optional per-row encoder output; see ``encode_tokens``.
+
+        Returns:
+            Padded text/query states, masks, and per-sample query specs.
         """
         device = next(self.parameters()).device
         batch = batch.to(device)
-        outputs = self.encoder(input_ids=batch.input_ids, attention_mask=batch.attention_mask)
-        token_embeddings = outputs.last_hidden_state
+        token_embeddings = self.encode_tokens(batch, hidden_states)
         fast_routing = (
             getattr(self.processor, "token_pooling", None) == "first"
             and getattr(batch, "text_word_indices", None) is not None
@@ -2060,6 +2089,8 @@ class BoundaryExtractorModel(BaseExtractorModel):
     def save_pretrained(self, save_directory: str, **kwargs):
         from safetensors.torch import save_file
 
+        if self.encoder is None:
+            raise ValueError("cannot save a boundary model built with load_encoder=False")
         os.makedirs(save_directory, exist_ok=True)
         self.config.architecture = "boundary"
         self.config.architectures = [type(self).__name__]

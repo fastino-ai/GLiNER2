@@ -5,7 +5,7 @@ available from the torch-free base install. Model, configuration, and LoRA
 objects remain lazy so importing :mod:`gliner2` never imports the ML stack.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 from .api_client import (
     AuthenticationError,
