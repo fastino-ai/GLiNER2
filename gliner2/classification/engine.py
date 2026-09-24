@@ -43,6 +43,7 @@ class ClassificationConfig:
     max_len: Optional[int] = None
     include_confidence: bool = True
     on_infeasible: str = "relax"
+    # Applied to raw logits at decode time, before per-task ``temperature``.
     calibrator: Optional[Calibrator] = None
 
     def __post_init__(self):
@@ -157,6 +158,8 @@ class Classifier:
                 "scores were produced for a different schema (fingerprint mismatch); "
                 "re-score before decoding"
             )
+        if config.calibrator is not None:
+            scores = scores.calibrated(config.calibrator)
         problem = build_problem(compiled, scores, config, active=active)
 
         def widen():
