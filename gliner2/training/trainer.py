@@ -76,9 +76,6 @@ from gliner2.training.sampler import (
     LengthGroupedSampler,
 )
 
-from peft import PeftModel
-from peft.tuners.lora.layer import LoraLayer as _PeftLoraLayer
-
 logger = logging.getLogger(__name__)
 
 
@@ -851,6 +848,8 @@ class ExtractorTrainer:
         if not self.config.use_lora:
             logger.info("LoRA is disabled")
             return
+
+        from gliner2.training.lora import _PeftLoraLayer
 
         for p in self.model.parameters():
             p.requires_grad = False
@@ -2119,13 +2118,15 @@ class ExtractorTrainer:
             trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         else:
             # Full model save: merge LoRA weights if present. Import both
-            # helpers up front: ``merge_lora_weights`` was previously
+            # helpers together: ``merge_lora_weights`` was previously
             # referenced without an import, raising NameError on the first
-            # full-checkpoint save under LoRA.
-            from gliner2.training.lora import merge_lora_weights, unmerge_lora_weights
-
+            # full-checkpoint save under LoRA. The import stays inside the
+            # LoRA branch because it needs peft, which non-LoRA training
+            # does not.
             lora_was_merged = False
             if self.config.use_lora and self.lora_layers:
+                from gliner2.training.lora import merge_lora_weights, unmerge_lora_weights
+
                 first_lora_layer = next(iter(self.lora_layers.values()))
                 if not first_lora_layer.merged:
                     num_merged = merge_lora_weights(self.model)
@@ -2210,6 +2211,8 @@ class ExtractorTrainer:
         is_adapter = (checkpoint_dir / "adapter_config.json").exists()
 
         if is_adapter:
+            from gliner2.training.lora import PeftModel, _PeftLoraLayer
+
             logger.info("Loading LoRA adapter from %s", checkpoint_path)
             base = self.model.get_base_model() if isinstance(self.model, PeftModel) else self.model
             self.model = PeftModel.from_pretrained(base, str(checkpoint_dir))

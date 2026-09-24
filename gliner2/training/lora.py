@@ -19,9 +19,19 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from peft import LoraConfig as PeftLoraConfig, get_peft_model, PeftModel
-from peft.tuners.lora.layer import LoraLayer as _PeftLoraLayer
 from safetensors.torch import load_file, save_file
+
+try:
+    from peft import LoraConfig as PeftLoraConfig, get_peft_model, PeftModel
+    from peft.tuners.lora.layer import LoraLayer as _PeftLoraLayer
+except ModuleNotFoundError as exc:
+    if exc.name != "peft":
+        raise
+    raise ImportError(
+        "LoRA support requires the optional 'peft' package, which is not installed. "
+        'Install it with: pip install "gliner2[train]" for training, or '
+        'pip install "gliner2[local]" for inference.'
+    ) from exc
 
 from gliner2.training.lora_targets import (  # noqa: F401 - compatibility exports
     ENCODER_PATTERNS,
