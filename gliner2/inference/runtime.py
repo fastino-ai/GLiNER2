@@ -259,12 +259,38 @@ class ExtractorRuntimeMixin:
         include_spans: bool = False,
         max_len: Optional[int] = None,
         overlap_policy: Optional[str] = None,
+        hidden_states: Optional[List[torch.Tensor]] = None,
     ) -> List[Dict[str, Any]]:
-        """Extract from multiple texts with parallel preprocessing."""
+        """Extract from multiple texts with parallel preprocessing.
+
+        Args:
+            texts: Input texts.
+            schemas: One schema for every text, or one per text.
+            batch_size: Texts per encoder pass; ignored with ``hidden_states``.
+            threshold: Default span threshold.
+            num_workers: DataLoader workers for collation.
+            format_results: Return the public formatted payload.
+            include_confidence: Keep confidence scores on the payload.
+            include_spans: Keep character offsets on the payload.
+            max_len: Optional word-token cap per text.
+            overlap_policy: Optional span overlap policy override.
+            hidden_states: Optional precomputed encoder output, one tensor per
+                text; all texts then collate as one batch. See ``encode_tokens``.
+
+        Returns:
+            One result dict per text.
+
+        Raises:
+            ValueError: On a bad ``batch_size`` or a schema/state count mismatch.
+        """
         if not texts:
             return []
         if batch_size <= 0:
             raise ValueError("batch_size must be greater than 0")
+        if hidden_states is not None and len(hidden_states) != len(texts):
+            raise ValueError(
+                f"hidden_states count ({len(hidden_states)}) != text count ({len(texts)})"
+            )
 
         self.eval()
         self.processor.change_mode(is_training=False)
@@ -300,7 +326,7 @@ class ExtractorRuntimeMixin:
                 self.processor, is_training=False, max_len=max_len, architecture=self.architecture
             )
 
-        if len(dataset) <= batch_size and num_workers == 0:
+        if hidden_states is not None or (len(dataset) <= batch_size and num_workers == 0):
             batches = [collator(dataset)]
         else:
             batches = DataLoader(
@@ -325,6 +351,7 @@ class ExtractorRuntimeMixin:
                 metadata_list[sample_idx : sample_idx + len(batch)],
                 include_confidence,
                 include_spans,
+                hidden_states=hidden_states,
             )
 
             if format_results:
@@ -420,12 +447,11 @@ class ExtractorRuntimeMixin:
         metadata_list: List[Dict],
         include_confidence: bool,
         include_spans: bool,
+        hidden_states: Optional[List[torch.Tensor]] = None,
     ) -> List[Dict[str, Any]]:
         """Extract from preprocessed batch (span architecture path)."""
         all_token_embs, all_schema_embs = self.processor.extract_embeddings_from_batch(
-            self.encoder(
-                input_ids=batch.input_ids, attention_mask=batch.attention_mask
-            ).last_hidden_state,
+            self.encode_tokens(batch, hidden_states),
             batch.input_ids,
             batch,
         )

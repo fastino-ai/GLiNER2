@@ -216,8 +216,27 @@ class RawScorer:
         count_top_k: int = 2,
         top_k_roles: Optional[int] = None,
         relation_pair_cap: Optional[int] = None,
+        hidden_states: Optional[Sequence[torch.Tensor]] = None,
     ) -> List[Any]:
-        """Score documents, using exactly one encoder pass for each model batch."""
+        """Score documents, using exactly one encoder pass for each model batch.
+
+        Args:
+            texts: Input texts.
+            schemas: One schema for every text, or one per text.
+            batch_size: Texts per encoder pass; ignored with ``hidden_states``.
+            max_len: Optional word-token cap per text.
+            count_top_k: Count hypotheses kept per span task.
+            top_k_roles: Optional per-role candidate cap (boundary only).
+            relation_pair_cap: Optional relation pair cap (boundary only).
+            hidden_states: Optional precomputed encoder output, one tensor per
+                text; all texts then collate as one batch.
+
+        Returns:
+            One score lattice or candidate score set per text.
+
+        Raises:
+            ValueError: On a non-positive control or a count mismatch.
+        """
         texts = list(texts)
         if not texts:
             return []
@@ -231,6 +250,10 @@ class RawScorer:
         size = 8 if batch_size is None else batch_size
         if size <= 0:
             raise ValueError("batch_size must be positive")
+        if hidden_states is not None:
+            if len(hidden_states) != len(texts):
+                raise ValueError("hidden_states must have the same length as texts")
+            size = len(texts)
         if count_top_k <= 0:
             raise ValueError("count_top_k must be positive")
         if top_k_roles is not None and top_k_roles <= 0:
@@ -249,6 +272,7 @@ class RawScorer:
                 max_len=effective_max_len,
                 top_k_roles=top_k_roles,
                 relation_pair_cap=relation_pair_cap,
+                hidden_states=hidden_states,
             )
 
         results: List[ScoreLattice] = []
@@ -262,9 +286,7 @@ class RawScorer:
                 self.device,
                 self.dtype if self.dtype != torch.float32 else None,
             )
-            encoded = self.model.encoder(
-                input_ids=batch.input_ids, attention_mask=batch.attention_mask
-            ).last_hidden_state
+            encoded = self.model.encode_tokens(batch, hidden_states)
             token_embs, schema_embs = self.processor.extract_embeddings_from_batch(
                 encoded, batch.input_ids, batch
             )
@@ -291,6 +313,7 @@ class RawScorer:
         max_len: Optional[int],
         top_k_roles: Optional[int],
         relation_pair_cap: Optional[int],
+        hidden_states: Optional[Sequence[torch.Tensor]] = None,
     ) -> List[Any]:
         """Score boundary checkpoints into architecture-neutral sparse sets."""
         results: List[Any] = []
@@ -308,7 +331,7 @@ class RawScorer:
                 self.device,
                 self.dtype if self.dtype != torch.float32 else None,
             )
-            core = self.model._encode_core(batch)
+            core = self.model._encode_core(batch, hidden_states=hidden_states)
             output = self.model.boundary_head(
                 core["text_states"],
                 core["text_mask"],

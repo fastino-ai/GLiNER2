@@ -14,7 +14,7 @@ import logging
 import os
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -138,6 +138,46 @@ class EncodedBatch:
 # Base model
 # =============================================================================
 
+def _pad_hidden_states(
+    hidden_states: Sequence[torch.Tensor],
+    attention_mask: torch.Tensor,
+    *,
+    hidden_size: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Right-pad per-row encoder states to ``attention_mask``'s shape.
+
+    Args:
+        hidden_states: One ``(tokens_i, hidden)`` tensor per batch row.
+        attention_mask: The collated ``[B, L]`` mask; rows are right-padded.
+        hidden_size: Expected hidden width.
+        dtype: Output dtype, matching the model's parameters.
+
+    Returns:
+        A ``[B, L, hidden_size]`` tensor on ``attention_mask``'s device.
+
+    Raises:
+        ValueError: On a row count, row length or hidden width mismatch.
+    """
+    rows, width = attention_mask.shape
+    if len(hidden_states) != rows:
+        raise ValueError(
+            f"hidden_states has {len(hidden_states)} rows; the batch has {rows}"
+        )
+    lengths = attention_mask.sum(dim=-1).tolist()
+    padded = torch.zeros(
+        (rows, width, hidden_size), dtype=dtype, device=attention_mask.device
+    )
+    for index, (states, length) in enumerate(zip(hidden_states, lengths, strict=True)):
+        if states.dim() != 2 or states.shape != (length, hidden_size):
+            raise ValueError(
+                f"hidden_states[{index}] has shape {tuple(states.shape)}; "
+                f"expected ({length}, {hidden_size})"
+            )
+        padded[index, :length] = states.to(device=padded.device, dtype=dtype)
+    return padded
+
+
 class BaseExtractorModel(PreTrainedModel):
     """Shared base for extractor architectures.
 
@@ -214,6 +254,45 @@ class BaseExtractorModel(PreTrainedModel):
                 stacklevel=2,
             )
             return load("eager")
+
+    def encode_tokens(
+        self,
+        batch,
+        hidden_states: Optional[Sequence[torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        """Return padded ``[B, L, H]`` token states for a collated batch.
+
+        This is the only inference call into ``self.encoder``. A serving engine
+        that already ran the encoder passes its per-row output instead.
+
+        Args:
+            batch: A ``PreprocessedBatch`` on the model's device.
+            hidden_states: Optional precomputed encoder output, one
+                ``(tokens_i, hidden)`` tensor per row, where ``tokens_i`` is
+                that row's unpadded length in ``batch.attention_mask``.
+
+        Returns:
+            Token states shaped like ``batch.input_ids`` plus a hidden axis.
+
+        Raises:
+            ValueError: If ``hidden_states`` does not match the batch, or the
+                model has no encoder and ``hidden_states`` is ``None``.
+        """
+        if hidden_states is None:
+            if getattr(self, "encoder", None) is None:
+                raise ValueError(
+                    f"{type(self).__name__} was built without an encoder; "
+                    "pass hidden_states"
+                )
+            return self.encoder(
+                input_ids=batch.input_ids, attention_mask=batch.attention_mask
+            ).last_hidden_state
+        return _pad_hidden_states(
+            hidden_states,
+            batch.attention_mask,
+            hidden_size=self.hidden_size,
+            dtype=next(self.parameters()).dtype,
+        )
 
     def task_module_names(self) -> Tuple[str, ...]:
         raise NotImplementedError

@@ -148,13 +148,34 @@ class ClassificationScorer:
 
     @torch.inference_mode()
     def batch_score(self, texts: Sequence[str], compiled, *, batch_size: int = 8,
-                    max_len: Optional[int] = None) -> list:
+                    max_len: Optional[int] = None,
+                    hidden_states: Optional[Sequence[torch.Tensor]] = None) -> list:
+        """Score each text's classification tasks.
+
+        Args:
+            texts: Input texts.
+            compiled: One schema for every text, or one per text.
+            batch_size: Texts per encoder pass; ignored with ``hidden_states``.
+            max_len: Optional word-token cap per text.
+            hidden_states: Optional precomputed encoder output, one tensor per
+                text; all texts then collate as one batch.
+
+        Returns:
+            One ``ClassificationScores`` per text.
+
+        Raises:
+            ValueError: On a bad ``batch_size`` or a count mismatch.
+        """
         texts = list(texts)
         if not texts:
             return []
         compiled_list = self._normalize(compiled, len(texts))
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        if hidden_states is not None:
+            if len(hidden_states) != len(texts):
+                raise ValueError("hidden_states must have the same length as texts")
+            batch_size = len(texts)
 
         self.eval()
         results: list = []
@@ -162,14 +183,16 @@ class ClassificationScorer:
             chunk_texts = texts[offset:offset + batch_size]
             chunk_compiled = compiled_list[offset:offset + batch_size]
             rows = list(zip(chunk_texts, [c.build() for c in chunk_compiled]))
-            batch = self.processor.collate_fn_inference(rows, max_len=max_len)
+            batch = self.processor.collate_fn_inference(
+                rows,
+                max_len=max_len,
+                architecture=getattr(self.model, "architecture", "span"),
+            )
             batch = batch.to(
                 self.device,
                 self.dtype if self.dtype != torch.float32 else None,
             )
-            encoded = self.model.encoder(
-                input_ids=batch.input_ids, attention_mask=batch.attention_mask
-            ).last_hidden_state
+            encoded = self.model.encode_tokens(batch, hidden_states)
             _, schema_embs = self.processor.extract_embeddings_from_batch(
                 encoded, batch.input_ids, batch
             )
