@@ -173,6 +173,15 @@ All models are on the [GLiNER2 family collection](https://huggingface.co/collect
 
 Boundary checkpoints include classification, records, and relations when those heads are enabled. Prefer **`gliner2.5-base-v1`** for English and **`gliner2.5-multi-v1`** for multilingual.
 
+### Decide (text classification specialists)
+
+| Model | Parameters | Encoder | Architecture | Language | Use case |
+|-------|------------|---------|--------------|----------|----------|
+| [`fastino/GLiNER2.5-Decide`](https://huggingface.co/fastino/GLiNER2.5-Decide) | 340M | DeBERTa-v3-large | span | English | Intent, routing, sentiment, multi-label tags |
+| [`fastino/GLiNER2.5-multi-Decide`](https://huggingface.co/fastino/GLiNER2.5-multi-Decide) | 287M | mDeBERTa-v3-base | boundary | Multilingual | Same, multilingual |
+
+Decide checkpoints are tuned for classification: use `classify_text` / `batch_classify_text` (or `Classifier`). Both load with `AutoExtractor`; note that `GLiNER2.5-Decide` is a span checkpoint despite the 2.5 name, so `GLiNER2.from_pretrained` also loads it, while `GLiNER2.5-multi-Decide` is boundary-only. Local inference needs `pip install "gliner2[local]"`. Evaluated on [`fastino/fast-decisions`](https://huggingface.co/datasets/fastino/fast-decisions).
+
 ### Safety and PII (span fine-tunes)
 
 | Model | Parameters | Use case |
@@ -190,6 +199,8 @@ See [Safety, PII, and GLiGuard](tutorial/16-safety_pii.md) for usage. GLiGuard a
 | English IE (recommended) | `fastino/gliner2.5-base-v1` |
 | Multilingual IE | `fastino/gliner2.5-multi-v1` |
 | Small / fast English | `fastino/gliner2.5-small-v1` |
+| Text classification (English) | `fastino/GLiNER2.5-Decide` |
+| Text classification (multilingual) | `fastino/GLiNER2.5-multi-Decide` |
 | Legacy span | `fastino/gliner2-{base,large,multi}-v1` |
 | LLM guardrails | `fastino/gliguard-LLMGuardrails-300M` |
 | PII redaction | `fastino/gliner2-privacy-filter-PII-multi` |
