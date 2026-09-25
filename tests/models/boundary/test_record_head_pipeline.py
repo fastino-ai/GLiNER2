@@ -193,6 +193,13 @@ def test_engine_decode_records_emits_public_structure_shape():
     buyers = {inst["buyer"] for inst in instances}
     assert buyers == {"Alice", "Bob"}
 
+    scored = model._decode_records(
+        batch, 0, core, cands, offset=0, start_map=start_map, end_map=end_map,
+        text=text, text_len=len(tokens), include_confidence=True, include_spans=False,
+    )
+    assert all("confidence" not in inst for inst in instances)
+    assert all(0.0 <= inst["confidence"] <= 1.0 for inst in scored["purchase"])
+
 
 def test_engine_choice_field_uses_per_record_assignment_not_global_fallback(
     monkeypatch,

@@ -867,8 +867,8 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                 continue
             edges.setdefault(relation_type, []).append({
                 "score": score,
-                "head": (head, h0, h1),
-                "tail": (tail, t0, t1),
+                "head": (head, h0, h1, float(pairs.head_prob[pair_index])),
+                "tail": (tail, t0, t1, float(pairs.tail_prob[pair_index])),
             })
 
         out: Dict[str, Any] = {}
@@ -876,20 +876,22 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
             relation_edges = self._deduplicate_relation_edges(relation_edges)
             for edge in relation_edges:
                 score = edge["score"]
-                head, h0, h1 = edge["head"]
-                tail, t0, t1 = edge["tail"]
+                head, h0, h1, head_score = edge["head"]
+                tail, t0, t1, tail_score = edge["tail"]
                 if include_spans:
                     value = {
                         "head": {"text": head, "start": h0, "end": h1},
                         "tail": {"text": tail, "start": t0, "end": t1},
                     }
                     if include_confidence:
-                        value["head"]["confidence"] = score
-                        value["tail"]["confidence"] = score
+                        value["head"]["confidence"] = head_score
+                        value["tail"]["confidence"] = tail_score
+                        value["confidence"] = score
                 elif include_confidence:
                     value = {
-                        "head": {"text": head, "confidence": score},
-                        "tail": {"text": tail, "confidence": score},
+                        "head": {"text": head, "confidence": head_score},
+                        "tail": {"text": tail, "confidence": tail_score},
+                        "confidence": score,
                     }
                 else:
                     value = (head, tail)
@@ -959,8 +961,8 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                 continue
 
             def rank(candidate):
-                _, hs, he = candidate["head"]
-                _, ts, te = candidate["tail"]
+                _, hs, he, _ = candidate["head"]
+                _, ts, te, _ = candidate["tail"]
                 distance = max(hs - te, ts - he, 0)
                 return (distance, -candidate["score"], hs, ts)
 
@@ -1316,6 +1318,8 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                     )
                     inst[fspec.name] = value
                 if any(v is not None and v != [] for v in inst.values()):
+                    if include_confidence:
+                        inst["confidence"] = rec.score
                     instances.append(inst)
             if instances:
                 out[spec.task_name] = instances
