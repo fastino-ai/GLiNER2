@@ -79,6 +79,14 @@ class DataValidationError(Exception):
         return self.args[0]
 
 
+_NO_TASK_ERROR = (
+    "Example must have at least one task (entities, classifications, structures, or relations). "
+    "A negative example still needs the labels it is negative for: declare them with empty "
+    "mention lists, e.g. entities={'person': [], 'company': []}, or pass them as "
+    "entity_descriptions."
+)
+
+
 # =============================================================================
 # Data Format Detection & Loading
 # =============================================================================
@@ -679,9 +687,12 @@ class InputExample:
     text : str
         The input text for this example.
     entities : Dict[str, List[str]], optional
-        Entity type to mentions mapping.
+        Entity type to mentions mapping. A type mapped to an empty list is a
+        negative: the text is trained as containing no mention of that type.
     entity_descriptions : Dict[str, str], optional
-        Descriptions for entity types.
+        Descriptions for entity types. Every described type is part of this
+        example's label set, so a described type with no mentions is added to
+        ``entities`` with an empty list and trained as a negative.
     classifications : List[Classification], optional
         Classification tasks for this example.
     structures : List[Structure], optional
@@ -694,6 +705,10 @@ class InputExample:
     >>> example = InputExample(
     ...     text="John Smith works at Google.",
     ...     entities={"person": ["John Smith"], "company": ["Google"]}
+    ... )
+    >>> negative = InputExample(
+    ...     text="The meeting moved to Tuesday.",
+    ...     entities={"person": [], "company": []}
     ... )
     """
     text: str
@@ -712,6 +727,10 @@ class InputExample:
             self.structures = []
         if self.relations is None:
             self.relations = []
+        if self.entity_descriptions:
+            undeclared = [t for t in self.entity_descriptions if t not in self.entities]
+            if undeclared:
+                self.entities = {**self.entities, **{t: [] for t in undeclared}}
 
     def validate(self) -> List[str]:
         """
@@ -738,11 +757,6 @@ class InputExample:
                     if mention and mention.lower() not in self.text.lower():
                         errors.append(f"Entity '{mention}' (type: {entity_type}) not found in text")
 
-        if self.entity_descriptions and self.entities:
-            for desc_type in self.entity_descriptions:
-                if desc_type not in self.entities:
-                    errors.append(f"Entity description for '{desc_type}' but no entities of that type")
-
         for cls in self.classifications:
             errors.extend(cls.validate())
 
@@ -761,7 +775,7 @@ class InputExample:
 
         has_content = bool(self.entities) or bool(self.classifications) or bool(self.structures) or bool(self.relations)
         if not has_content:
-            errors.append("Example must have at least one task (entities, classifications, structures, or relations)")
+            errors.append(_NO_TASK_ERROR)
 
         return errors
 
