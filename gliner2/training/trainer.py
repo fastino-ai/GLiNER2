@@ -194,7 +194,13 @@ class TrainingConfig:
     scheduler_type: str = "linear"
     warmup_ratio: float = 0.1
     warmup_steps: int = 0
-    num_cycles: float = 0.5
+    # One full cosine, annealing to zero. At 0.5 the `cosine_restarts` schedule
+    # degenerates: its lambda is `cos(pi * ((num_cycles * progress) % 1.0))`, so an
+    # argument that only reaches 0.5 never wraps -- no restart ever happens and the
+    # LR stops at half of base, leaving the final epoch taking full-size steps.
+    #     num_cycles=0.5  ->  progress 0.50: 0.854   progress 1.00: 0.500
+    #     num_cycles=1.0  ->  progress 0.50: 0.500   progress 1.00: 0.000
+    num_cycles: float = 1.0
     fp16: Optional[bool] = None
     bf16: Optional[bool] = None
     eval_strategy: str = "steps"
@@ -591,7 +597,7 @@ class TrainingMetrics:
 # Scheduler Factory
 # =============================================================================
 
-def get_scheduler(optimizer, scheduler_type, num_training_steps, num_warmup_steps, num_cycles=0.5):
+def get_scheduler(optimizer, scheduler_type, num_training_steps, num_warmup_steps, num_cycles=1.0):
     """Create learning rate scheduler."""
     def lr_lambda_linear(step):
         if step < num_warmup_steps:
