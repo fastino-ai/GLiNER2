@@ -128,6 +128,55 @@ def test_shared_oracle_recall_uses_retained_preinjection_pool():
     assert result.stats.gold_hit_without_injection.item() == 0
 
 
+def test_pool_warns_when_oversubscribed(caplog):
+    """More distinct candidate spans than ``pool_size`` -> a warning fires.
+
+    This is silent by design in the return value (no exception, no field);
+    the warning is the only signal that low-priority candidates were
+    dropped after each query's ``min_pool_per_query`` quota was filled,
+    which is how record/entity fields end up null or bound to the wrong
+    instance without the caller ever seeing an error.
+    """
+    torch.manual_seed(0)
+    pool = DocumentCandidatePool(
+        4, pool_boundary_top_k=6, pool_size=2, min_pool_per_query=0
+    )
+    states = torch.randn(1, 8, 4)
+    boundary_mask = torch.ones(1, 8, dtype=torch.bool)
+    query_mask = torch.ones(1, 3, dtype=torch.bool)
+    start = torch.randn(1, 3, 8)
+    end = torch.randn(1, 3, 8)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="gliner2.models.boundary.pool"):
+        pool(states, boundary_mask, query_mask, start, end)
+
+    assert any(
+        "DocumentCandidatePool" in record.message and "pool_size" in record.message
+        for record in caplog.records
+    )
+
+
+def test_pool_does_not_warn_when_capacity_is_sufficient(caplog):
+    torch.manual_seed(0)
+    pool = DocumentCandidatePool(
+        4, pool_boundary_top_k=6, pool_size=64, min_pool_per_query=2
+    )
+    states = torch.randn(1, 8, 4)
+    boundary_mask = torch.ones(1, 8, dtype=torch.bool)
+    query_mask = torch.ones(1, 3, dtype=torch.bool)
+    start = torch.randn(1, 3, 8)
+    end = torch.randn(1, 3, 8)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="gliner2.models.boundary.pool"):
+        pool(states, boundary_mask, query_mask, start, end)
+
+    assert not any("DocumentCandidatePool" in record.message for record in caplog.records)
+
+
 def test_single_query_union_is_unchanged_by_padded_queries():
     torch.manual_seed(8)
     pool = DocumentCandidatePool(
