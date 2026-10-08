@@ -1062,7 +1062,7 @@ def _group_scored_candidates(
     ]
     if bi.numel() == 0:
         return out
-    rows = torch.stack(
+    rows_device = torch.stack(
         (
             bi,
             qi,
@@ -1070,8 +1070,19 @@ def _group_scored_candidates(
             candidates.indices[bi, qi, ci, 1],
         ),
         dim=-1,
-    ).cpu().numpy()
-    scores = probs[bi, qi, ci].float().cpu().numpy()
+    )
+    scores_device = probs[bi, qi, ci].float()
+    if rows_device.device.type == "cuda":
+        rows_cpu = torch.empty_like(rows_device, device="cpu", pin_memory=True)
+        scores_cpu = torch.empty_like(scores_device, device="cpu", pin_memory=True)
+        rows_cpu.copy_(rows_device, non_blocking=True)
+        scores_cpu.copy_(scores_device, non_blocking=True)
+        torch.cuda.current_stream(rows_device.device).synchronize()
+    else:
+        rows_cpu = rows_device.cpu()
+        scores_cpu = scores_device.cpu()
+    rows = rows_cpu.numpy()
+    scores = scores_cpu.numpy()
     segment_ids = rows[:, 0] * q + rows[:, 1]
     change_points = (
         (segment_ids[1:] != segment_ids[:-1]).nonzero()[0] + 1

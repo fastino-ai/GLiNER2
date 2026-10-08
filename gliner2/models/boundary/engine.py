@@ -20,10 +20,89 @@ from gliner2.models.boundary.model import (
     _group_scored_candidates,
 )
 from gliner2.models.base import QueryLayout
-from gliner2.models.boundary.records import decode_group
+from gliner2.models.boundary.records import (
+    PackedRecordDecodeOutput,
+    decode_group,
+    packed_record_group_to_ragged,
+)
+from gliner2.models.outputs import CandidateTensorBatch
+from gliner2.processing.boundary_preprocessing import pack_record_routes
 
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_tensors_to_cpu(tensors):
+    """Copy tensors to CPU with one CUDA synchronization."""
+    if not tensors:
+        return []
+    device = tensors[0].device
+    if device.type != "cuda":
+        return [tensor.detach().cpu() for tensor in tensors]
+    copied = []
+    for tensor in tensors:
+        target = torch.empty_like(tensor, device="cpu", pin_memory=True)
+        target.copy_(tensor.detach(), non_blocking=True)
+        copied.append(target)
+    torch.cuda.current_stream(device).synchronize()
+    return copied
+
+
+def _copy_record_decode_inputs_to_cpu(
+    dense,
+    candidates: CandidateTensorBatch,
+    threshold: float,
+    temperature: float,
+) -> Tuple[PackedRecordDecodeOutput, CandidateTensorBatch]:
+    selected = dense.instance_mask & (
+        torch.sigmoid(dense.object_logits / temperature) >= threshold
+    )
+    sample_indices, group_indices, instance_indices = selected.nonzero(
+        as_tuple=True
+    )
+    copied = _copy_tensors_to_cpu(
+        [
+            sample_indices,
+            group_indices,
+            instance_indices,
+            dense.object_logits[sample_indices, group_indices, instance_indices],
+            dense.assign_logits[sample_indices, group_indices, instance_indices],
+            dense.field_membership,
+            dense.pool_spans,
+            candidates.pair_logits,
+            candidates.valid_mask,
+        ]
+    )
+    (
+        sample_indices,
+        group_indices,
+        instance_indices,
+        object_logits,
+        assign_logits,
+        field_membership,
+        pool_spans,
+        pair_logits,
+        valid_mask,
+    ) = copied
+    packed = PackedRecordDecodeOutput(
+        sample_indices=sample_indices,
+        group_indices=group_indices,
+        instance_indices=instance_indices,
+        object_logits=object_logits,
+        assign_logits=assign_logits,
+        field_membership=field_membership,
+        pool_spans=pool_spans,
+    )
+    indices = pool_spans[:, None].expand(-1, pair_logits.shape[1], -1, -1)
+    candidates_cpu = CandidateTensorBatch(
+        indices=indices,
+        proposal_logits=None,
+        pair_logits=pair_logits,
+        valid_mask=valid_mask,
+        query_mask=valid_mask.any(-1),
+        candidate_states=None,
+    )
+    return packed, candidates_cpu
 
 
 def _resolve_flat_spans(
@@ -71,7 +150,33 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
         probs = None
         grouped_candidates = None
         null_probs = None
+        packed_record_output = None
+        record_candidates = None
         if has_queries:
+            record_specs = getattr(batch, "record_specs", ())
+            record_names_by_sample = [
+                {spec.task_name for spec in specs.values()}
+                for specs in record_specs
+            ]
+            needs_grouped_candidates = any(
+                spec["task_type"] == "entities"
+                or (
+                    spec["task_type"] == "json_structures"
+                    and spec["task_name"]
+                    not in (
+                        record_names_by_sample[sample_index]
+                        if sample_index < len(record_names_by_sample)
+                        else set()
+                    )
+                )
+                for sample_index, specs in enumerate(core["ext_specs"])
+                for spec in specs
+            )
+            needs_null_probs = any(
+                spec["task_type"] == "entities"
+                for specs in core["ext_specs"]
+                for spec in specs
+            )
             query_thresholds = self._query_thresholds(
                 core["ext_specs"], metadata_list, threshold,
                 core["query_states"].device,
@@ -82,19 +187,67 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                 return_candidates=True,
             )
             candidates = out.candidates
-            probs = torch.sigmoid(
-                candidates.pair_logits
-                / self.boundary_settings.pair_temperature
-            )
-            grouped_candidates = _group_scored_candidates(
-                candidates,
-                threshold=query_thresholds,
-                probabilities=probs,
-                count_log_rates=out.count_log_rates,
-                adaptive_threshold=self.boundary_settings.adaptive_threshold,
-            )
-            if out.null_logits is not None:
+            record_candidates = candidates
+            if needs_grouped_candidates:
+                probs = torch.sigmoid(
+                    candidates.pair_logits
+                    / self.boundary_settings.pair_temperature
+                )
+                grouped_candidates = _group_scored_candidates(
+                    candidates,
+                    threshold=query_thresholds,
+                    probabilities=probs,
+                    count_log_rates=out.count_log_rates,
+                    adaptive_threshold=self.boundary_settings.adaptive_threshold,
+                )
+            if needs_null_probs and out.null_logits is not None:
                 null_probs = torch.sigmoid(out.null_logits).float().cpu()
+
+            routing = pack_record_routes(record_specs)
+            if (
+                getattr(self, "enable_records", False)
+                and self.boundary_settings.candidate_pool == "shared"
+                and candidates.candidate_states is not None
+                and routing is not None
+            ):
+                dense = self.record_decoder.forward_groups_dense(
+                    core["query_states"], candidates, routing
+                )
+                packed_record_output, record_candidates = (
+                    _copy_record_decode_inputs_to_cpu(
+                        dense,
+                        candidates,
+                        float(threshold),
+                        self.boundary_settings.record_temperature,
+                    )
+                )
+
+        classification_records = [[] for _ in range(len(batch))]
+        classification_values = []
+        classification_offset = 0
+        for sample_index, specs in enumerate(core["cls_specs"]):
+            schema = batch.original_schemas[sample_index]
+            for cls in specs:
+                computed = self._compute_classification_probabilities(
+                    schema,
+                    cls["group_embs"],
+                    cls["schema_tokens"],
+                    temperature=self.boundary_settings.classification_temperature,
+                )
+                if computed is None:
+                    continue
+                task_name, config, probabilities = computed
+                count = probabilities.numel()
+                classification_records[sample_index].append(
+                    (task_name, config, classification_offset, count)
+                )
+                classification_values.append(probabilities.reshape(-1))
+                classification_offset += count
+        classification_cpu = (
+            torch.cat(classification_values).cpu()
+            if classification_values
+            else torch.empty(0)
+        )
 
         def decode_sample(i: int) -> Dict[str, Any]:
             sample: Dict[str, Any] = {}
@@ -109,11 +262,12 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
             text_len = len(start_map)
 
             record_results = self._decode_records(
-                batch, i, core, candidates, offset, start_map, end_map,
+                batch, i, core, record_candidates, offset, start_map, end_map,
                 text, text_len, include_confidence, include_spans,
                 threshold=threshold,
                 metadata=metadata_list[i],
                 overlap_policy=overlap_policy,
+                packed_record_output=packed_record_output,
             )
             for name, instances in record_results.items():
                 if instances:
@@ -173,12 +327,12 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
             if entity_results:
                 sample["entities"] = [entity_results]
 
-            schema = batch.original_schemas[i]
-            for cls in core["cls_specs"][i]:
-                self._extract_classification_result(
-                    sample, cls["task_name"], schema,
-                    cls["group_embs"], cls["schema_tokens"],
-                    temperature=self.boundary_settings.classification_temperature,
+            for task_name, config, start, count in classification_records[i]:
+                self._decode_classification_probabilities(
+                    sample,
+                    task_name,
+                    config,
+                    classification_cpu[start : start + count],
                 )
 
             return sample
@@ -440,7 +594,9 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
             query_mask,
             indices,
         )[0]
-        logits = logits / self.boundary_settings.pair_temperature
+        logits = (
+            logits / self.boundary_settings.pair_temperature
+        ).float().cpu()
         row_by_label = {
             label: row for row, (label, _) in enumerate(attribute_rows)
         }
@@ -703,7 +859,7 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
         )[0, 0]
         probabilities = torch.sigmoid(
             logits / self.boundary_settings.pair_temperature
-        )
+        ).float().cpu()
         if preferred_choices:
             probability_by_choice = {
                 choice: float(probabilities[index])
@@ -833,6 +989,25 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
         probabilities = torch.sigmoid(
             logits / self.boundary_settings.relation_temperature
         )
+        (
+            probabilities,
+            head_start,
+            head_end,
+            tail_start,
+            tail_end,
+            head_prob,
+            tail_prob,
+        ) = _copy_tensors_to_cpu(
+            [
+                probabilities,
+                pairs.head_start,
+                pairs.head_end,
+                pairs.tail_start,
+                pairs.tail_end,
+                pairs.head_prob,
+                pairs.tail_prob,
+            ]
+        )
         edges: Dict[str, List[Dict[str, Any]]] = {}
         relation_metadata = metadata.get("relation_metadata", {})
         relation_aliases = {
@@ -855,10 +1030,10 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
             score = float(probability.detach())
             if score < relation_threshold:
                 continue
-            hs = int(pairs.head_start[pair_index]) - offset
-            he = int(pairs.head_end[pair_index]) - offset
-            ts = int(pairs.tail_start[pair_index]) - offset
-            te = int(pairs.tail_end[pair_index]) - offset
+            hs = int(head_start[pair_index]) - offset
+            he = int(head_end[pair_index]) - offset
+            ts = int(tail_start[pair_index]) - offset
+            te = int(tail_end[pair_index]) - offset
             if not (0 <= hs < he <= text_len and 0 <= ts < te <= text_len):
                 continue
             h0, h1 = token_boundaries_to_character_offsets(hs, he, start_map, end_map)
@@ -868,8 +1043,8 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                 continue
             edges.setdefault(relation_type, []).append({
                 "score": score,
-                "head": (head, h0, h1, float(pairs.head_prob[pair_index])),
-                "tail": (tail, t0, t1, float(pairs.tail_prob[pair_index])),
+                "head": (head, h0, h1, float(head_prob[pair_index])),
+                "tail": (tail, t0, t1, float(tail_prob[pair_index])),
             })
 
         out: Dict[str, Any] = {}
@@ -1020,11 +1195,14 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
         threshold: Optional[float] = None,
         metadata: Optional[Dict[str, Any]] = None,
         overlap_policy: Optional[str] = None,
+        packed_record_output: Optional[PackedRecordDecodeOutput] = None,
     ) -> Dict[str, Any]:
         """Decode record/event groups into public structure output shapes."""
         if not getattr(self, "enable_records", False):
             return {}
-        if candidates is None or candidates.candidate_states is None:
+        if candidates is None:
+            return {}
+        if packed_record_output is None and candidates.candidate_states is None:
             return {}
         record_specs = getattr(batch, "record_specs", ())
         if sample_index >= len(record_specs) or not record_specs[sample_index]:
@@ -1290,10 +1468,20 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                 formatted, is_scalar, include_confidence, include_spans
             )
 
-        for task_index, spec in record_specs[sample_index].items():
-            group = self.record_decoder.forward_group(
-                spec, query_states_i, candidates, sample_index
-            )
+        for group_index, (task_index, spec) in enumerate(
+            record_specs[sample_index].items()
+        ):
+            if packed_record_output is not None:
+                group = packed_record_group_to_ragged(
+                    packed_record_output,
+                    spec,
+                    sample_index,
+                    group_index,
+                )
+            else:
+                group = self.record_decoder.forward_group(
+                    spec, query_states_i, candidates, sample_index
+                )
             decoded = decode_group(
                 group,
                 anchor_threshold=record_threshold,

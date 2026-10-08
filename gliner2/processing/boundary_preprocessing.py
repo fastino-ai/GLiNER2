@@ -350,6 +350,53 @@ def _pack_record_targets(
     )
 
 
+def pack_record_routes(
+    record_specs: Sequence[Mapping[int, RecordSpec]],
+) -> Optional[Tuple[torch.Tensor, ...]]:
+    """Pack record routing for batched inference."""
+    max_groups = max((len(specs) for specs in record_specs), default=0)
+    if max_groups == 0:
+        return None
+    max_fields = max(
+        (len(spec.fields) for specs in record_specs for spec in specs.values()),
+        default=1,
+    )
+    batch_size = len(record_specs)
+    field_query_ids = torch.zeros(
+        batch_size, max_groups, max_fields, dtype=torch.long
+    )
+    field_mask = torch.zeros_like(field_query_ids, dtype=torch.bool)
+    scalar_fields = torch.zeros_like(field_mask)
+    modes = torch.full((batch_size, max_groups), -1, dtype=torch.long)
+    anchor_fields = torch.full_like(modes, -1)
+    group_mask = torch.zeros_like(modes, dtype=torch.bool)
+    mode_ids = {"natural": 0, "latent": 1, "anchorless": 2}
+
+    for batch_index, specs in enumerate(record_specs):
+        for group_index, spec in enumerate(specs.values()):
+            group_mask[batch_index, group_index] = True
+            modes[batch_index, group_index] = mode_ids[spec.mode]
+            for field_index, field_spec in enumerate(spec.fields):
+                field_query_ids[batch_index, group_index, field_index] = (
+                    field_spec.query_id
+                )
+                field_mask[batch_index, group_index, field_index] = True
+                scalar_fields[batch_index, group_index, field_index] = (
+                    field_spec.cardinality.is_scalar
+                )
+                if field_spec.query_id == spec.anchor_query_id:
+                    anchor_fields[batch_index, group_index] = field_index
+
+    return (
+        field_query_ids,
+        field_mask,
+        scalar_fields,
+        modes,
+        anchor_fields,
+        group_mask,
+    )
+
+
 def _pack_relation_routes(
     layouts: Sequence[QueryLayout],
     relation_gold: Sequence[Sequence[Sequence[Tuple[int, int, int, int]]]],
