@@ -1218,12 +1218,14 @@ class SchemaTransformer:
 
                 if random.random() < sampling.include_true_label_prob:
                     true_label = item.get("true_label", [])
-                    if isinstance(true_label, list):
-                        for tl in true_label:
-                            if tl not in cls_labels:
-                                cls_labels.append(tl)
-                    elif true_label not in cls_labels:
-                        cls_labels.append(true_label)
+                    if not isinstance(true_label, list):
+                        true_label = [true_label]
+                    for tl in true_label:
+                        # Gold must re-enter under its synthetic name, or the real
+                        # name is trained as a negative.
+                        tl = real2syn.get(tl, tl)
+                        if tl not in cls_labels:
+                            cls_labels.append(tl)
 
             if sampling and sampling.shuffle_classification_labels:
                 random.shuffle(cls_labels)
@@ -1245,6 +1247,8 @@ class SchemaTransformer:
             if real2syn:
                 true_label = schema["classifications"][idx].get("true_label")
                 if true_label is not None:
+                    if not isinstance(true_label, list):
+                        true_label = [true_label]
                     schema["classifications"][idx]["true_label"] = [
                         real2syn.get(i, i) for i in true_label
                     ]
