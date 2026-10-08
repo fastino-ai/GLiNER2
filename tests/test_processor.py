@@ -660,6 +660,41 @@ class TestClassificationPrefix:
         assert val == "[selection]happy"
 
 
+class TestClassificationSyntheticLabels:
+    """Synthetic renaming must keep the gold label a positive under its new name."""
+
+    @pytest.fixture
+    def processor_synthetic(self, tokenizer):
+        cfg = SamplingConfig(
+            remove_classification_prob=0.0,
+            shuffle_classification_labels=True,
+            remove_classification_label_prob=1.0,
+            synthetic_label_prob=1.0,
+            include_true_label_prob=1.0,
+        )
+        return SchemaTransformer(tokenizer=tokenizer, sampling_config=cfg, token_pooling="first")
+
+    @pytest.mark.parametrize("true_label", [["neutral"], "neutral", ["positive", "neutral"]])
+    def test_reinserted_true_label_uses_synthetic_name(self, processor_synthetic, true_label):
+        labels = ["positive", "negative", "neutral"]
+        gold = true_label if isinstance(true_label, list) else [true_label]
+        expected = {f"label {labels.index(t) + 1}" for t in gold}
+        random.seed(0)
+        for _ in range(200):
+            schema = {
+                "classifications": [
+                    {"task": "sentiment", "labels": list(labels), "true_label": true_label}
+                ]
+            }
+            processor_synthetic._process_classifications(
+                schema, [], [], [], processor_synthetic.sampling_config
+            )
+            item = schema["classifications"][0]
+            assert not set(labels) & set(item["labels"])
+            assert set(item["true_label"]) == expected
+            assert expected <= set(item["labels"])
+
+
 # ===========================================================================
 # Batch Device Transfer
 # ===========================================================================
