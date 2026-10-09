@@ -30,8 +30,9 @@ Fine-tune via [Fastino](https://agent.fastino.ai). Join discussions on [Discord]
 
 GLiNER2 requires Python 3.10 or newer and is tested on Python 3.10 to 3.12. The
 `local`, `train`, and `benchmark` profiles install PyTorch, so they also need a
-Python version that PyTorch publishes wheels for. Choose the smallest install
-profile that matches your use case:
+Python version that PyTorch publishes wheels for. Local profiles support
+Transformers 4.43 through 5.x. Choose the smallest install profile that matches
+your use case:
 
 ```bash
 # Schema validation, API client, training-data utilities — no torch required
@@ -43,7 +44,8 @@ pip install gliner2[local]
 # Local inference with optimized DeBERTa-v2/v3 attention
 pip install "gliner2[disentangled-flash]"
 
-# Model training and recipe configuration
+# Model training and recipe configuration (adds sentencepiece and protobuf,
+# needed to build models from raw encoders such as microsoft/deberta-v3-base)
 pip install gliner2[train]
 
 # Reproducible tests, contributor tooling, or benchmarks
