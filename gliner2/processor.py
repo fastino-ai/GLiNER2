@@ -6,6 +6,7 @@ via DataLoader collate functions for parallel preprocessing.
 """
 
 import copy
+import importlib.util
 import logging
 import random
 from dataclasses import dataclass, field
@@ -26,6 +27,43 @@ from gliner2.processing.word_splitter import (  # noqa: F401 - public re-exports
 logger = logging.getLogger(__name__)
 
 _TOKENIZE_CACHE_SIZE = 50_000
+
+_SENTENCEPIECE_CONVERSION_MODULES = (
+    ("sentencepiece", "sentencepiece"),
+    ("protobuf", "google.protobuf"),
+)
+
+
+def _module_available(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def _load_encoder_tokenizer(model_name: str):
+    """Load an encoder tokenizer, naming the missing SentencePiece dependencies.
+
+    Encoders that ship only ``spm.model`` (e.g. ``microsoft/deberta-v3-base``)
+    need ``sentencepiece`` and ``protobuf`` to build a fast tokenizer, and
+    Transformers reports their absence with misleading errors.
+    """
+    try:
+        return AutoTokenizer.from_pretrained(model_name)
+    except (AttributeError, ImportError, ValueError) as exc:
+        missing = [
+            package
+            for package, module in _SENTENCEPIECE_CONVERSION_MODULES
+            if not _module_available(module)
+        ]
+        if not missing:
+            raise
+        raise ImportError(
+            f"Loading the tokenizer for {model_name!r} failed; missing "
+            f"{', '.join(missing)}. Encoders that ship only a SentencePiece "
+            "vocabulary need both sentencepiece and protobuf; install them with "
+            "'pip install \"gliner2[train]\"'."
+        ) from exc
 
 
 # =============================================================================
@@ -332,7 +370,7 @@ class SchemaTransformer:
             raise ValueError("Either model_name or tokenizer must be provided.")
 
         self.token_pooling = token_pooling if token_pooling in ["first", "mean", "max"] else "first"
-        self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = tokenizer or _load_encoder_tokenizer(model_name)
         self.word_splitter = resolve_word_splitter(word_splitter)
         self.sampling_config = sampling_config or SamplingConfig()
         self.is_training = False
