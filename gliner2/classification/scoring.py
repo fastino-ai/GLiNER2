@@ -93,6 +93,20 @@ class ClassificationScores:
     def logit(self, task: str, label: str) -> float:
         return self.tasks[task][label]
 
+    def calibrated(self, calibrator) -> ClassificationScores:
+        """Return a copy with every raw logit passed through ``calibrator``.
+
+        Applied once, before per-task ``temperature``, so utilities,
+        probabilities, and confidence all see the same calibrated logits.
+        """
+        return ClassificationScores(
+            text=self.text,
+            tasks={t: {n: float(calibrator(v)) for n, v in labels.items()}
+                   for t, labels in self.tasks.items()},
+            fingerprint=self.fingerprint,
+            specs=self.specs,
+        )
+
     def probability(self, task: str, label: str) -> float:
         spec = self._spec(task)
         temp = spec.temperature
