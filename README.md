@@ -1384,7 +1384,7 @@ train_examples = [
 
 # Create and validate dataset
 train_dataset = TrainingDataset(train_examples)
-train_dataset.validate(strict=True, raise_on_error=True)
+train_dataset.validate(raise_on_error=True)
 train_dataset.print_stats()
 
 # Split into train/validation
