@@ -1303,7 +1303,12 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                             and record_index < len(record_anchors)
                             else None
                         )
-                        if anchor_span is not None:
+                        # An anchor outside the document (a schema-prefix token) has no
+                        # character span: treat it as no anchor, as the list path below does.
+                        if (
+                            anchor_span is not None
+                            and 0 <= anchor_span[0] - offset < anchor_span[1] - offset <= text_len
+                        ):
                             cs, ce = token_boundaries_to_character_offsets(
                                 anchor_span[0] - offset,
                                 anchor_span[1] - offset,
@@ -1489,6 +1494,7 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                 object_threshold=record_threshold,
                 temperature=settings.record_temperature,
             )
+            decoded = self._drop_prefix_anchored(decoded, spec, metadata, offset)
             instances = []
             record_anchors = [record.anchor_span for record in decoded]
             for record_index, rec in enumerate(decoded):
@@ -1513,6 +1519,20 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
             if instances:
                 out[spec.task_name] = instances
         return out
+
+    @staticmethod
+    def _drop_prefix_anchored(decoded, spec, metadata: Dict[str, Any], offset: int):
+        """Drop records whose anchor starts in the schema prefix, unless the anchor field takes ``choices``.
+
+        A ``choices=`` field embeds its literals before the document, and every query's
+        candidates cover them, so a document-span anchor can land on schema text and
+        emit a record anchored on nothing in the document.
+        """
+        anchor = next((f for f in spec.fields if f.query_id == spec.anchor_query_id), None)
+        field_metadata = metadata.get("field_metadata", {})
+        if anchor is None or field_metadata.get(f"{spec.task_name}.{anchor.name}", {}).get("choices"):
+            return decoded
+        return [r for r in decoded if r.anchor_span is None or r.anchor_span[0] >= offset]
 
     def _candidate_span_probability(
         self,
