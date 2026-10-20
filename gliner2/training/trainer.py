@@ -242,7 +242,10 @@ class TrainingConfig:
     debug_global_steps: List[int] = field(default_factory=list)
     ddp_consensus_check: bool = True
     ddp_find_unused_parameters: bool = False
-    ddp_static_graph: bool = True
+    # False: with static_graph=True no gradient was averaged across ranks (the backward sink could not see into
+    # ExtractorOutput), and once it can, static_graph cannot accumulate under no_sync(). Plain DDP plus
+    # _ddp_full_touch averages every step.
+    ddp_static_graph: bool = False
     dry_run_recall_steps: int = 0
     gate_recall: float = 0.97
     gate_long_recall: float = 0.93
@@ -1120,6 +1123,16 @@ class ExtractorTrainer:
             return 0.0
         return max(1.0 - step / anneal_steps, 0.0)
 
+    @staticmethod
+    def _ddp_full_touch(model) -> torch.Tensor:
+        """An exactly-zero term reaching EVERY trainable parameter on every step, so plain DDP sees the same used set.
+
+        Which parameters receive a gradient varies by batch (classifier, count head, relation and record heads each
+        only on batches carrying their task). Plain DDP (find_unused_parameters=False) then fails "Expected to have
+        finished reduction"; find_unused_parameters=True cannot be used because forward returns tensors that are not
+        part of the loss. Touching every parameter every step keeps the used set constant and every gradient reduced."""
+        return sum(p.sum() * 0.0 for p in model.parameters() if p.requires_grad)
+
     def _backward_one(
         self,
         batch,
@@ -1226,6 +1239,8 @@ class ExtractorTrainer:
                     reported_loss = loss.detach()
                     if self.config.gradient_accumulation_steps > 1:
                         loss = loss / self.config.gradient_accumulation_steps
+                    if self.is_distributed:
+                        loss = loss + self._ddp_full_touch(model)
 
                 if self.config.fp16:
                     self.scaler.scale(loss).backward()
