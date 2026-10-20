@@ -74,6 +74,23 @@ def _query_type(layout: QueryLayout, query_id: int) -> str:
 class TypedRelationPairGenerator:
     """Generate typed, capped relation pairs from entity candidates."""
 
+    # Elements per block of relations in ``select`` (int64 keys: 2**25 = 256 MiB). The full-menu decode
+    # (598 relations x 1.2M candidates) materialised [B, R, Q*K] int64 tensors of 5.47 GiB each before.
+    select_budget: int = 1 << 25
+
+    @staticmethod
+    def _candidate_order(flat_prob: torch.Tensor, flat_spans: torch.LongTensor):
+        """Per sample, each candidate's position in (start, end, index) order and in (score desc, start, end,
+        index) order. Relation-independent, so computed once instead of once per relation."""
+        bsz, n = flat_prob.shape
+        arange = torch.arange(n, device=flat_prob.device).expand(bsz, n)
+        order = arange.gather(-1, torch.argsort(flat_spans[..., 1], dim=-1, stable=True))
+        order = order.gather(-1, torch.argsort(flat_spans[..., 0].gather(-1, order), dim=-1, stable=True))
+        span_pos = torch.empty_like(order).scatter_(-1, order, arange)
+        by_score = order.gather(-1, torch.argsort(flat_prob.gather(-1, order), dim=-1, descending=True, stable=True))
+        score_pos = torch.empty_like(order).scatter_(-1, by_score, arange)
+        return span_pos, score_pos
+
     def __init__(self, settings: RelationProposalSettings | None = None) -> None:
         self.settings = settings or RelationProposalSettings()
 
@@ -153,49 +170,38 @@ class TypedRelationPairGenerator:
                         tail_member[batch_index, relation_index, valid_t] = True
 
         probs = torch.sigmoid(candidates.pair_logits)
-        base_valid = candidates.valid_mask & candidates.query_mask.unsqueeze(-1)
-        flat_prob = probs.reshape(bsz, 1, queries * cand_count).expand(-1, rel_count, -1)
-        flat_valid = base_valid.reshape(bsz, 1, -1).expand(-1, rel_count, -1)
-        head_valid = flat_valid & head_member.unsqueeze(-1).expand(
-            -1, -1, -1, cand_count
-        ).reshape(bsz, rel_count, -1)
-        tail_valid = flat_valid & tail_member.unsqueeze(-1).expand(
-            -1, -1, -1, cand_count
-        ).reshape(bsz, rel_count, -1)
-        threshold = flat_prob >= s.argument_threshold
-        head_valid &= threshold
-        tail_valid &= threshold
+        flat_count = queries * cand_count
+        flat_prob = probs.reshape(bsz, flat_count)
+        flat_spans = candidates.indices.reshape(bsz, flat_count, 2)
+        eligible = (
+            (candidates.valid_mask & candidates.query_mask.unsqueeze(-1)).reshape(bsz, flat_count)
+            & (flat_prob >= s.argument_threshold)
+        )
         floor = torch.finfo(flat_prob.dtype).min
-        flat_spans = candidates.indices.reshape(bsz, queries * cand_count, 2)
+        span_pos, score_pos = self._candidate_order(flat_prob, flat_spans)
+        block = max(1, self.select_budget // max(1, bsz * flat_count))
 
-        def select(valid: torch.BoolTensor, requested: int):
-            take = min(requested, queries * cand_count)
-            secondary = torch.arange(
-                queries * cand_count, device=device
-            ).view(1, 1, -1).expand(bsz, rel_count, -1)
-            end_key = flat_spans[..., 1].unsqueeze(1).expand(
-                -1, rel_count, -1
-            )
-            end_order = torch.argsort(
-                end_key.gather(-1, secondary), dim=-1, stable=True
-            )
-            secondary = secondary.gather(-1, end_order)
-            start_key = flat_spans[..., 0].unsqueeze(1).expand(
-                -1, rel_count, -1
-            )
-            start_order = torch.argsort(
-                start_key.gather(-1, secondary), dim=-1, stable=True
-            )
-            secondary = secondary.gather(-1, start_order)
-            ordered_score = flat_prob.gather(-1, secondary)
-            ordered_valid = valid.gather(-1, secondary)
-            rank_in_secondary = torch.argsort(
-                ordered_score.masked_fill(~ordered_valid, floor),
-                dim=-1, descending=True, stable=True,
-            )[..., :take]
-            ranked = secondary.gather(-1, rank_in_secondary)
-            selected_valid = valid.gather(-1, ranked)
-            selected_prob = flat_prob.gather(-1, ranked)
+        def select(member: torch.BoolTensor, requested: int):
+            """Each relation's top ``requested`` eligible candidates of its member queries.
+
+            Ranked by score (descending), ties by (start, end, index); when fewer qualify, the rest
+            follow in (start, end, index) order and are marked invalid. One shared candidate order and
+            a per-relation ``topk`` over unique keys, in blocks of relations under ``select_budget``:
+            the same selection as sorting every relation's [Q*K] row, without the [B, R, Q*K] sorts.
+            """
+            take = min(requested, flat_count)
+            ranked = torch.empty(bsz, rel_count, take, dtype=torch.long, device=device)
+            selected_valid = torch.empty(bsz, rel_count, take, dtype=torch.bool, device=device)
+            for r0 in range(0, rel_count, block):
+                r1 = min(r0 + block, rel_count)
+                valid = eligible.unsqueeze(1) & member[:, r0:r1].unsqueeze(-1).expand(
+                    -1, -1, -1, cand_count
+                ).reshape(bsz, r1 - r0, flat_count)
+                key = torch.where(valid, score_pos.unsqueeze(1), flat_count + span_pos.unsqueeze(1))
+                idx = key.topk(take, dim=-1, largest=False, sorted=True).indices
+                ranked[:, r0:r1] = idx
+                selected_valid[:, r0:r1] = valid.gather(-1, idx)
+            selected_prob = flat_prob.unsqueeze(1).expand(-1, rel_count, -1).gather(-1, ranked)
             if take < requested:
                 pad = requested - take
                 ranked = F.pad(ranked, (0, pad))
@@ -209,8 +215,8 @@ class TypedRelationPairGenerator:
             spans = candidates.indices[batch, qslot, cslot]
             return selected_prob, qslot, spans, selected_valid
 
-        hp, hq, hspan, hvalid = select(head_valid, s.heads_per_relation)
-        tp, tq, tspan, tvalid = select(tail_valid, s.tails_per_relation)
+        hp, hq, hspan, hvalid = select(head_member, s.heads_per_relation)
+        tp, tq, tspan, tvalid = select(tail_member, s.tails_per_relation)
         pair_score = hp.unsqueeze(-1) * tp.unsqueeze(-2)
         pair_valid = hvalid.unsqueeze(-1) & tvalid.unsqueeze(-2)
         same_span = (hspan.unsqueeze(-2) == tspan.unsqueeze(-3)).all(-1)
