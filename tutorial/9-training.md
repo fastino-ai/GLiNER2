@@ -114,7 +114,7 @@ train_examples = [
 
 # Step 2: Create and validate dataset
 train_dataset = TrainingDataset(train_examples)
-train_dataset.validate(strict=True, raise_on_error=True)
+train_dataset.validate(raise_on_error=True)
 train_dataset.print_stats()
 
 # Step 3: Split into train/validation
@@ -437,7 +437,7 @@ dataset = TrainingDataset.load("train.jsonl")
 
 # Strict validation (checks entity spans exist in text)
 try:
-    dataset.validate(strict=True, raise_on_error=True)
+    dataset.validate(raise_on_error=True)
 except ValidationError as e:
     print(f"Validation failed: {e}")
 
@@ -1202,8 +1202,8 @@ example = InputExample(
     entities={}  # OK if other tasks present
 )
 
-# 3. Use loose validation during development
-dataset.validate(strict=False, raise_on_error=False)
+# 3. Get a validation report instead of raising an exception
+dataset.validate(raise_on_error=False)
 ```
 
 ### Model Not Learning
