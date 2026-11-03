@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, List, Mapping, Optional, Sequence, Tuple
 
-import torch
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,8 @@ def build_boundary_targets(
     multi-label (nested spans can share a boundary). Inside marks tokens covered
     by at least one mention of that query.
     """
+    import torch
+
     start = torch.zeros(query_count, text_length + 1)
     end = torch.zeros(query_count, text_length + 1)
     inside = torch.zeros(query_count, text_length)
@@ -399,6 +402,8 @@ def pad_target_graphs(
     (defense in depth so a fallback target path cannot leave CPU tensors to
     meet accelerator logits downstream).
     """
+    import torch
+
     if on_capacity_exceeded not in CAPACITY_POLICIES:
         raise ValueError(
             f"on_capacity_exceeded must be one of {CAPACITY_POLICIES}, "
