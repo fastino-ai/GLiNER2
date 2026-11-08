@@ -161,6 +161,8 @@ def char_span_to_word_boundaries(
 
     token_end_inclusive = None
     for i in range(n - 1, -1, -1):
+        if start_mappings[i] == end_mappings[i]:
+            continue
         if start_mappings[i] < char_end <= end_mappings[i] or end_mappings[i] == char_end:
             token_end_inclusive = i
             break
