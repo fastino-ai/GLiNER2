@@ -38,8 +38,8 @@ class TrainingSession:
             raise ValueError("sessions require uncompiled single-process execution")
         if getattr(model, "architecture", "span") not in {"span", "boundary"}:
             raise ValueError("unsupported extractor architecture")
-        if config.fp16 and config.gradient_checkpointing:
-            raise ValueError("fp16 sessions with gradient checkpointing are not qualified; use fp32/bf16 or disable checkpointing")
+        if config.fp16:
+            raise ValueError("fp16 sessions are not qualified; use fp32 or hardware-native bf16")
         if (config.fp16 or config.bf16) and not torch.cuda.is_available():
             raise ValueError("mixed precision sessions require CUDA")
         if config.bf16 and torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:

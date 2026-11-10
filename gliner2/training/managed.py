@@ -216,8 +216,8 @@ class ManagedTraining:
         total = 0.0
         for start in range(0, len(self.eval_examples), size):
             batch = self.eval_examples[start:start + size]
-            total += self.session.forward(batch)["loss"] * len(batch)
-        return total / len(self.eval_examples)
+            total += self.session.forward(batch)["loss"]
+        return total / math.ceil(len(self.eval_examples) / size)
 
     def advance(self) -> dict[str, float]:
         if self._failed:

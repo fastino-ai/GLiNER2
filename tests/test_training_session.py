@@ -300,7 +300,8 @@ def test_native_import_shards_and_mismatch_leave_fresh_session_unchanged(tmp_pat
         child.load_weights(tmp_path / "bad")
 
 
-def test_fp16_checkpointing_is_rejected_before_device_allocation(tmp_path):
-    cfg = config(tmp_path, fp16=True, gradient_checkpointing=True)
-    with pytest.raises(ValueError, match="fp16 sessions with gradient checkpointing"):
+@pytest.mark.parametrize("checkpointing", [False, True])
+def test_fp16_is_rejected_before_device_allocation(tmp_path, checkpointing):
+    cfg = config(tmp_path, fp16=True, gradient_checkpointing=checkpointing)
+    with pytest.raises(ValueError, match="fp16 sessions are not qualified"):
         TrainingSession(build_tiny_span_model(), cfg, max_steps=2)

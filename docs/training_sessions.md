@@ -117,8 +117,9 @@ and length grouping. It does not reuse the legacy trainer's Torch sampler stream
 the legacy sampler remains unchanged. Hardware precision checks happen when the
 training engine is created, so a CPU control plane can plan a CUDA run.
 
-FP16 span sessions require `gradient_checkpointing=False`; the combination with
-activation checkpointing is rejected before allocation because its scaler
-updates failed the strict no-skipped-update qualification. FP32 and native BF16
-support activation checkpointing. Boundary FP16 is unsupported. These are exact
-qualified combinations, not automatic precision or checkpointing substitutions.
+Public sessions support FP32 and hardware-native BF16 only. FP16 is rejected
+before allocation: qualification observed skipped GradScaler updates both with
+and without activation checkpointing. Failed GPU evidence is retained. Hosted
+applications can keep their existing trainer path for FP16; the session API never
+silently changes precision or drops an update. FP32/BF16 activation checkpointing
+and full/LoRA training are covered by the successful eight-case L4 matrix.

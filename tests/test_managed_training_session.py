@@ -110,3 +110,15 @@ def test_manifest_is_the_same_exact_schedule_and_includes_validation(tmp_path, a
     assert sum(batch["update"] for batch in manifest["batches"]) == plan.max_steps
     assert manifest == plan.to_manifest(eval_examples=ROWS)
     assert manifest["fingerprint"] != plan.to_manifest()["fingerprint"]
+
+
+@pytest.mark.parametrize("builder", [build_tiny_span_model, build_tiny_boundary_model])
+def test_validation_partial_tail_matches_native_batch_mean(tmp_path, builder):
+    cfg = config(tmp_path, batch_size=2, eval_batch_size=2, save_best=False, eval_strategy="epoch")
+    rows = ROWS * 3
+    plan = ManagedTrainingPlan(rows, cfg, architecture=builder().architecture)
+    session = TrainingSession(builder(), cfg, max_steps=plan.max_steps)
+    managed = ManagedTraining(session, plan, eval_examples=rows)
+    expected = session.trainer._evaluate(session.trainer._prepare_data(rows, is_train=False))["eval_loss"]
+    assert managed.evaluate() == pytest.approx(expected)
+    managed.close()

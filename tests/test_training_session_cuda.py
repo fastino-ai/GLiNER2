@@ -20,7 +20,6 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="requires 
 
 @pytest.mark.parametrize("builder,precision", [
     (build_tiny_span_model, "fp32"),
-    (build_tiny_span_model, "fp16"),
     (build_tiny_span_model, "bf16"),
     (build_tiny_boundary_model, "fp32"),
     (build_tiny_boundary_model, "bf16"),
