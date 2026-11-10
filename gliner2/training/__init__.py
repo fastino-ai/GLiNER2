@@ -26,6 +26,7 @@ from gliner2.training.data import (
 )
 
 _LAZY = {
+    "TrainingSession": ("gliner2.training.session", "TrainingSession"),
     "ExtractorTrainer": ("gliner2.training.trainer", "ExtractorTrainer"),
     "GLiNER2Trainer": ("gliner2.training.trainer", "GLiNER2Trainer"),
     "TrainingConfig": ("gliner2.training.trainer", "TrainingConfig"),
@@ -36,6 +37,7 @@ _LAZY = {
 }
 
 __all__ = [
+    "TrainingSession",
     "ChoiceField",
     "Classification",
     "DataFormat",
