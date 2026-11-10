@@ -237,6 +237,26 @@ class TrainingSession:
             self._broken = True
             raise
 
+    def load_weights(self, directory: str | Path) -> None:
+        """Start from trained weights while preserving a fresh run's schedule/RNG.
+
+        The model and adapter topology must match. Optimizer hyperparameters,
+        schedule and batching can differ for the new training run.
+        """
+        self._ready()
+        if self.step or self._pending or self.optimizer.state:
+            raise ValueError("weights-only restore requires a fresh session")
+        payload = torch.load(Path(directory) / "training-state.pt", map_location="cpu", weights_only=True)
+        expected = self._configuration()
+        if payload["version"] != 2 or any(payload["configuration"][key] != expected[key]
+                                         for key in ("model", "adapter")):
+            raise ValueError("checkpoint model topology does not match session")
+        try:
+            self.model.load_state_dict(payload["model"], strict=True)
+        except BaseException:
+            self._broken = True
+            raise
+
     def _copy_model_to_cpu(self) -> torch.nn.Module:
         # Allocate detached export parameters on CPU directly; deepcopying a
         # CUDA model first would need a second full model on the training GPU.

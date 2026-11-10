@@ -215,3 +215,21 @@ def test_engine_extension_state_round_trips_with_pending_gradients(tmp_path):
     plain = TrainingSession(build_tiny_span_model(), cfg, max_steps=2)
     with pytest.raises(ValueError, match="engine"):
         plain.load_state(tmp_path / "state")
+
+
+
+def test_weights_only_continuation_keeps_new_schedule_and_optimizer(tmp_path):
+    a = TrainingSession(build_tiny_span_model(), config(tmp_path / "a"), max_steps=3)
+    a.forward_backward(ROWS)
+    a.optim_step()
+    a.save_state(tmp_path / "trained")
+    b = TrainingSession(build_tiny_span_model(seed=99), config(tmp_path / "b", task_lr=0.02), max_steps=5)
+    rng = torch.get_rng_state().clone()
+    b.load_weights(tmp_path / "trained")
+    assert b.step == 0 and not b.optimizer.state and b.pending_batches == 0
+    assert b.trainer.scheduler.last_epoch == 0
+    assert torch.equal(torch.get_rng_state(), rng)
+    for name, value in b.model.state_dict().items():
+        torch.testing.assert_close(value, a.model.state_dict()[name], rtol=0, atol=0)
+    b.forward_backward(ROWS)
+    assert b.optim_step() == 1
