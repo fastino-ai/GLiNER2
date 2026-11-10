@@ -31,7 +31,7 @@ def test_cuda_training_continuation_and_managed_equivalence(tmp_path, builder, p
         pytest.skip("hardware does not support bfloat16")
     cfg = config(tmp_path / "a", fp16=precision == "fp16", bf16=precision == "bf16",
                  use_lora=use_lora, lora_r=2, lora_alpha=4, lora_dropout=0.1,
-                 encoder_lr=1e-5, task_lr=1e-4, gradient_checkpointing=True,
+                 encoder_lr=1e-5, task_lr=1e-4, gradient_checkpointing=precision != "fp16",
                  lora_target_modules=["encoder", "all_task_heads"],
                  gradient_accumulation_steps=2, num_epochs=2, deterministic=True,
                  allow_tf32=False, float32_matmul_precision="highest")

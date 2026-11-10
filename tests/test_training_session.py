@@ -298,3 +298,9 @@ def test_native_import_shards_and_mismatch_leave_fresh_session_unchanged(tmp_pat
     metadata_path.write_text(json.dumps(metadata))
     with pytest.raises(ValueError, match="configuration"):
         child.load_weights(tmp_path / "bad")
+
+
+def test_fp16_checkpointing_is_rejected_before_device_allocation(tmp_path):
+    cfg = config(tmp_path, fp16=True, gradient_checkpointing=True)
+    with pytest.raises(ValueError, match="fp16 sessions with gradient checkpointing"):
+        TrainingSession(build_tiny_span_model(), cfg, max_steps=2)

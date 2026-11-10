@@ -116,3 +116,9 @@ The new managed planner owns a deterministic Python random stream for shuffling
 and length grouping. It does not reuse the legacy trainer's Torch sampler stream;
 the legacy sampler remains unchanged. Hardware precision checks happen when the
 training engine is created, so a CPU control plane can plan a CUDA run.
+
+FP16 span sessions require `gradient_checkpointing=False`; the combination with
+activation checkpointing is rejected before allocation because its scaler
+updates failed the strict no-skipped-update qualification. FP32 and native BF16
+support activation checkpointing. Boundary FP16 is unsupported. These are exact
+qualified combinations, not automatic precision or checkpointing substitutions.
