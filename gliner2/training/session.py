@@ -112,7 +112,7 @@ class TrainingSession:
             loss = self.model(batch).get("total_loss")
         if loss is None or not torch.isfinite(loss):
             raise FloatingPointError("forward produced no finite supervised loss")
-        return {"loss": float(loss.detach().cpu())}
+        return {"loss": float(loss.detach().cpu()), "num_tokens": float(batch.attention_mask.sum().item())}
 
     def forward_backward(self, rows: list[InputExample]) -> dict[str, float]:
         """Accumulate one bounded batch using the managed trainer's backward."""
@@ -134,7 +134,7 @@ class TrainingSession:
             self._broken = True
             raise
         self._pending += 1
-        return {"loss": float(loss.cpu())}
+        return {"loss": float(loss.cpu()), "num_tokens": float(batch.attention_mask.sum().item())}
 
     def optim_step(self) -> int:
         """Apply accumulated gradients with the managed trainer's optimizer."""

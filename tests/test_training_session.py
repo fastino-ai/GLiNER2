@@ -182,3 +182,12 @@ def test_restore_rejects_changed_label_sampling(tmp_path):
     b = TrainingSession(changed, config(tmp_path / "b"), max_steps=2)
     with pytest.raises(ValueError, match="configuration"):
         b.load_state(tmp_path / "state")
+
+
+def test_batch_metrics_report_actual_preprocessed_tokens(tmp_path):
+    session = TrainingSession(build_tiny_span_model(), config(tmp_path), max_steps=2)
+    measured = session.forward(ROWS)
+    assert measured.get("num_tokens", 0) > len(ROWS[0].text.split())
+    batch = session._batch(ROWS, training=False)
+    assert measured["num_tokens"] == int(batch.attention_mask.sum())
+    assert session.forward_backward(ROWS)["num_tokens"] > 0
