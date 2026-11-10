@@ -191,3 +191,27 @@ def test_batch_metrics_report_actual_preprocessed_tokens(tmp_path):
     batch = session._batch(ROWS, training=False)
     assert measured["num_tokens"] == int(batch.attention_mask.sum())
     assert session.forward_backward(ROWS)["num_tokens"] > 0
+
+
+def test_engine_extension_state_round_trips_with_pending_gradients(tmp_path):
+    from gliner2.training.trainer import ExtractorTrainer
+
+    class StatefulTrainer(ExtractorTrainer):
+        def session_state_dict(self):
+            return {"retained_batch": torch.tensor([1, 2, 3])}
+
+        def load_session_state_dict(self, state):
+            self.restored_batch = state["retained_batch"]
+
+    cfg = config(tmp_path)
+    a = TrainingSession(build_tiny_span_model(), cfg, max_steps=2, trainer_factory=StatefulTrainer)
+    a.forward_backward(ROWS)
+    a.save_state(tmp_path / "state")
+    b = TrainingSession(build_tiny_span_model(), cfg, max_steps=2, trainer_factory=StatefulTrainer)
+    b.load_state(tmp_path / "state")
+    assert b.pending_batches == 1
+    assert b.trainer.restored_batch.tolist() == [1, 2, 3]
+    b.optim_step()
+    plain = TrainingSession(build_tiny_span_model(), cfg, max_steps=2)
+    with pytest.raises(ValueError, match="engine"):
+        plain.load_state(tmp_path / "state")

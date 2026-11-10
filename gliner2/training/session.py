@@ -12,7 +12,7 @@ import os
 import random
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -30,7 +30,8 @@ class TrainingSession:
     Mixed precision requires CUDA; CPU requests fail rather than downgrade.
     """
 
-    def __init__(self, model: torch.nn.Module, config: TrainingConfig, *, max_steps: int):
+    def __init__(self, model: torch.nn.Module, config: TrainingConfig, *, max_steps: int,
+                 trainer_factory: Callable[..., ExtractorTrainer] = ExtractorTrainer):
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         if config.local_rank != -1 or config.compile_model:
@@ -52,7 +53,7 @@ class TrainingSession:
         if isinstance(model, PeftModel):
             from gliner2.training.session_adapters import validate_loaded_adapter
             validate_loaded_adapter(model, config)
-        self.trainer = ExtractorTrainer(model, copy.deepcopy(config))
+        self.trainer = trainer_factory(model=model, config=copy.deepcopy(config))
         config = self.trainer.config
         self.trainer._planned_max_steps = max_steps
         self.trainer.optimizer = self.trainer._create_optimizer()
@@ -187,6 +188,9 @@ class TrainingSession:
             "numpy_rng": (numpy_state[0], numpy_state[1].tolist(), *numpy_state[2:]),
             "cuda_rng": torch.cuda.get_rng_state_all() if self.trainer.device.type == "cuda" else [],
             "device_type": self.trainer.device.type,
+            "engine_type": f"{type(self.trainer).__module__}.{type(self.trainer).__qualname__}",
+            "engine_state": (self.trainer.session_state_dict()
+                             if hasattr(self.trainer, "session_state_dict") else None),
         }
         temporary = path / "training-state.tmp"
         torch.save(payload, temporary)
@@ -206,6 +210,11 @@ class TrainingSession:
             raise ValueError("checkpoint configuration does not match session")
         if payload["device_type"] != self.trainer.device.type:
             raise ValueError("cross-device continuation is not qualified")
+        engine_type = f"{type(self.trainer).__module__}.{type(self.trainer).__qualname__}"
+        if payload.get("engine_type", engine_type) != engine_type:
+            raise ValueError("checkpoint trainer engine does not match session")
+        if payload.get("engine_state") is not None and not hasattr(self.trainer, "load_session_state_dict"):
+            raise ValueError("trainer engine cannot restore its checkpoint state")
         try:
             self.model.load_state_dict(payload["model"], strict=True)
             self.optimizer.load_state_dict(payload["optimizer"])
@@ -213,6 +222,8 @@ class TrainingSession:
             self.trainer.scaler.load_state_dict(payload["scaler"])
             self.trainer.global_step = payload["step"]
             self._pending = payload["pending"]
+            if payload.get("engine_state") is not None:
+                self.trainer.load_session_state_dict(payload["engine_state"])
             for name, parameter in self.model.named_parameters():
                 gradient = payload["gradients"].get(name)
                 parameter.grad = None if gradient is None else gradient.to(parameter.device)
