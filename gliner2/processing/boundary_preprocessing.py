@@ -33,6 +33,93 @@ from gliner2.processing.layouts import validate_target_graph
 _EXTRACTIVE_MARKERS = ("[E]", "[C]", "[R]")
 
 
+def _dedupe_contained_spans(
+    pairs: Sequence[Tuple[int, int]],
+) -> List[Tuple[int, int]]:
+    """Keep only the maximal spans among ``pairs``, dropping contained ones.
+
+    ``pairs`` are half-open ``(start, end)`` token spans that all belong to one
+    query in one sample. Independently re-searching each listed value's tokens
+    (see ``Processor._build_outputs``) can match a short value's tokens as the
+    leading/trailing tokens of an unrelated, longer value's own, separately
+    verified match -- e.g. a bare listed value ``"Kiox"`` matching inside every
+    ``"Kiox 300"``/``"Kiox 400C"`` occurrence of a longer, distinct listed value
+    under the *same* query. Those short matches are sub-spans of a different,
+    real mention, not standalone occurrences, so they are phantom gold.
+
+    This applies the standard "longest match, non-overlapping" span-resolution
+    policy to the *reconstructed* positions rather than assuming the raw
+    per-value search results are already clean: drop ``(s1, e1)`` iff a
+    *different* pair ``(s2, e2)`` in the same list satisfies
+    ``s2 <= s1 and e1 <= e2``. Exact duplicates collapse to one instance
+    first (containment requires a genuinely different, larger pair). Ordinary
+    partial/crossing overlaps that are not containment (e.g. ``(0, 3)`` and
+    ``(2, 5)``) are left untouched -- this is deliberately narrow and only
+    resolves the strict sub-span case described above.
+    """
+    ordered = list(dict.fromkeys(pairs))
+    kept = []
+    for i, (s1, e1) in enumerate(ordered):
+        is_contained = any(
+            s2 <= s1 and e1 <= e2 and (s2, e2) != (s1, e1)
+            for j, (s2, e2) in enumerate(ordered)
+            if j != i
+        )
+        if not is_contained:
+            kept.append((s1, e1))
+    return kept
+
+
+def _unalignable_entity_error(
+    *,
+    field_name: str,
+    sample_idx: int,
+    original_texts: Optional[Sequence[str]],
+    original_schemas: Optional[Sequence[Optional[Mapping[str, Any]]]],
+) -> ValueError:
+    """Build an actionable ``ValueError`` for an entity that failed to token-align.
+
+    ``sample_idx`` is the batch-relative index inside this collated batch, not
+    a row/line number in the caller's source dataset -- this function has no
+    visibility into dataset ordering, and the DataLoader may have shuffled.
+    When the caller supplies ``original_texts``/``original_schemas`` (as
+    ``SchemaTransformer._add_boundary_metadata`` does), the message includes
+    the literal listed value(s) for the failing entity type and a text
+    snippet, so a caller does not have to reverse-engineer the tokenizer from
+    scratch to find the offending annotation.
+    """
+    listed_values: Any = None
+    if original_schemas is not None and 0 <= sample_idx < len(original_schemas):
+        schema = original_schemas[sample_idx]
+        if isinstance(schema, Mapping):
+            listed_values = schema.get("entities", {}).get(field_name)
+
+    snippet = None
+    if original_texts is not None and 0 <= sample_idx < len(original_texts):
+        text = original_texts[sample_idx]
+        snippet = text if len(text) <= 240 else f"{text[:240]}\u2026"
+
+    detail = [
+        f"entity {field_name!r} was not found in sample {sample_idx} "
+        "(a batch-relative index into this collated batch, not a row/line "
+        "number in your source dataset)."
+    ]
+    if listed_values is not None:
+        detail.append(f"Listed value(s) for {field_name!r}: {listed_values!r}.")
+    if snippet is not None:
+        detail.append(f"Sample text: {snippet!r}.")
+    detail.append(
+        "A listed value can be an exact character substring of the text yet still "
+        "fail this check: the tokenizer (WhitespaceTokenSplitter) merges a "
+        "hyphen/underscore-joined run (e.g. 'ledremote-abs-bes3-my2023') into one "
+        "token, so a standalone-token search for a sub-part of that run (e.g. 'abs') "
+        "finds nothing even though it is a literal substring. Call "
+        "SchemaTransformer.find_unalignable_entities(text, entities) on this "
+        "(text, schema) example before training to check alignment ahead of time."
+    )
+    return ValueError(" ".join(detail))
+
+
 def _extractive_fields(schema_tokens: Sequence[str]) -> list[str]:
     return [
         str(schema_tokens[i + 1])
@@ -263,6 +350,53 @@ def _pack_record_targets(
     )
 
 
+def pack_record_routes(
+    record_specs: Sequence[Mapping[int, RecordSpec]],
+) -> Optional[Tuple[torch.Tensor, ...]]:
+    """Pack record routing for batched inference."""
+    max_groups = max((len(specs) for specs in record_specs), default=0)
+    if max_groups == 0:
+        return None
+    max_fields = max(
+        (len(spec.fields) for specs in record_specs for spec in specs.values()),
+        default=1,
+    )
+    batch_size = len(record_specs)
+    field_query_ids = torch.zeros(
+        batch_size, max_groups, max_fields, dtype=torch.long
+    )
+    field_mask = torch.zeros_like(field_query_ids, dtype=torch.bool)
+    scalar_fields = torch.zeros_like(field_mask)
+    modes = torch.full((batch_size, max_groups), -1, dtype=torch.long)
+    anchor_fields = torch.full_like(modes, -1)
+    group_mask = torch.zeros_like(modes, dtype=torch.bool)
+    mode_ids = {"natural": 0, "latent": 1, "anchorless": 2}
+
+    for batch_index, specs in enumerate(record_specs):
+        for group_index, spec in enumerate(specs.values()):
+            group_mask[batch_index, group_index] = True
+            modes[batch_index, group_index] = mode_ids[spec.mode]
+            for field_index, field_spec in enumerate(spec.fields):
+                field_query_ids[batch_index, group_index, field_index] = (
+                    field_spec.query_id
+                )
+                field_mask[batch_index, group_index, field_index] = True
+                scalar_fields[batch_index, group_index, field_index] = (
+                    field_spec.cardinality.is_scalar
+                )
+                if field_spec.query_id == spec.anchor_query_id:
+                    anchor_fields[batch_index, group_index] = field_index
+
+    return (
+        field_query_ids,
+        field_mask,
+        scalar_fields,
+        modes,
+        anchor_fields,
+        group_mask,
+    )
+
+
 def _pack_relation_routes(
     layouts: Sequence[QueryLayout],
     relation_gold: Sequence[Sequence[Sequence[Tuple[int, int, int, int]]]],
@@ -331,6 +465,9 @@ def build_boundary_batch_metadata(
     build_targets: Optional[bool] = None,
     on_capacity_exceeded: str = "raise",
     ignore_missing_entities: bool = False,
+    dedupe_contained_entity_spans: bool = True,
+    original_texts: Optional[Sequence[str]] = None,
+    original_schemas: Optional[Sequence[Optional[Mapping[str, Any]]]] = None,
 ) -> tuple:
     """Build layouts, optional padded targets, and compiled record specs.
 
@@ -347,6 +484,23 @@ def build_boundary_batch_metadata(
     finite eval loss while still running the model in eval mode. Gold is used
     only for loss computation; proposal gold injection stays gated on
     ``model.training`` so eval remains unbiased.
+
+    ``dedupe_contained_entity_spans`` (default ``True``) filters an entity
+    query's raw per-value token matches down to the maximal, non-contained
+    ones before they become gold mentions -- see :func:`_dedupe_contained_spans`
+    for the exact rationale and rule. Scoped to ``task_type == "entities"``
+    only: JSON-structure and relation fields feed a separate, per-occurrence
+    record/edge-target consumer (:func:`_build_record_field_target`,
+    the relations ``gold_pairs`` block below) that reads raw positions
+    directly and is not touched by this filter, so filtering only their
+    aggregate query-level mentions here would make the two consumers
+    disagree about which spans are gold for the same field. Set to ``False``
+    to restore the pre-fix behavior (every independently found position
+    becomes a gold mention, including phantom sub-spans).
+
+    ``original_texts``/``original_schemas`` are optional and used only to
+    enrich the ``ValueError`` raised for an unalignable entity (literal listed
+    value(s) and a text snippet); omit them to get the older, terser message.
 
     Returns ``(layouts, targets, record_specs)`` where ``record_specs`` is a
     per-sample tuple of ``{task_index: RecordSpec}`` mappings.
@@ -423,6 +577,13 @@ def build_boundary_batch_metadata(
                 continue
 
             _, instances = labels
+            # Accumulate entity-query positions across every instance/listed
+            # value before emitting mentions, so containment filtering (below)
+            # sees the *whole* set of independently found positions for this
+            # query in this sample -- a phantom short match can come from a
+            # different instance than the longer match that actually explains
+            # it, not only from a list-valued field within one instance.
+            entity_pairs: Dict[int, List[Tuple[int, int]]] = {}
             for instance in instances:
                 for field_index, positions in enumerate(instance):
                     if field_index >= len(field_query_ids):
@@ -435,14 +596,16 @@ def build_boundary_batch_metadata(
                             if (start, end_inclusive) == (-1, -1):
                                 if ignore_missing_entities:
                                     continue
-                                raise ValueError(
-                                    f"entity {fields[field_index]!r} was not found "
-                                    f"in sample {sample_idx}"
+                                raise _unalignable_entity_error(
+                                    field_name=fields[field_index],
+                                    sample_idx=sample_idx,
+                                    original_texts=original_texts,
+                                    original_schemas=original_schemas,
                                 )
                             start, end = inclusive_tokens_to_boundary_pair(start, end_inclusive)
-                            mentions.append(
-                                MentionTarget(field_query_ids[field_index], start, end)
-                            )
+                            entity_pairs.setdefault(
+                                field_query_ids[field_index], []
+                            ).append((start, end))
                     else:
                         # JSON/relation fields may legitimately be absent within
                         # an instance; treat "not found" as absent and skip.
@@ -451,6 +614,18 @@ def build_boundary_batch_metadata(
                             mentions.append(
                                 MentionTarget(field_query_ids[field_index], start, end)
                             )
+            # NOTE: intentionally not named ``query_id`` -- that name is the
+            # running per-sample query-id counter mutated above and read by
+            # every later task_index iteration; shadowing it here would
+            # corrupt query-id assignment for every task processed afterward.
+            for entity_query_id, pairs in entity_pairs.items():
+                kept_pairs = (
+                    _dedupe_contained_spans(pairs)
+                    if dedupe_contained_entity_spans
+                    else pairs
+                )
+                for start, end in kept_pairs:
+                    mentions.append(MentionTarget(entity_query_id, start, end))
 
         layout = QueryLayout(queries=tuple(queries))
         layouts.append(layout)

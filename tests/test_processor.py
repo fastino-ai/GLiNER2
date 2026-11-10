@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import random
+import re
 
 import pytest
 import torch
@@ -154,6 +155,53 @@ class TestWhitespaceTokenSplitter:
         tokens = list(splitter("email foo@bar.com now", lower=True))
         emails = [t[0] for t in tokens if "@" in t[0] and "." in t[0]]
         assert len(emails) == 1
+
+    @pytest.mark.parametrize(
+        "text,words",
+        [
+            ("प्रधानमंत्री नरेंद्र मोदी ने कहा।", ["प्रधानमंत्री", "नरेंद्र", "मोदी", "ने", "कहा", "।"]),
+            ("কলকাতা শহরে", ["কলকাতা", "শহরে"]),
+            ("சென்னையில் மோடி", ["சென்னையில்", "மோடி"]),
+            ("హైదరాబాద్ నగరం", ["హైదరాబాద్", "నగరం"]),
+            ("ذَهَبَ مُحَمَّدٌ", ["ذَهَبَ", "مُحَمَّدٌ"]),
+        ],
+    )
+    def test_combining_marks_stay_inside_words(self, text, words):
+        splitter = WhitespaceTokenSplitter()
+        tokens = list(splitter(text, lower=False))
+        assert [t[0] for t in tokens] == words
+        for tok, start, end in tokens:
+            assert text[start:end] == tok
+
+    def test_zero_width_joiners_stay_inside_words(self):
+        splitter = WhitespaceTokenSplitter()
+        text = "क्‍ष और र‌ा"
+        assert [t[0] for t in splitter(text, lower=False)] == ["क्‍ष", "और", "र‌ा"]
+
+    def test_decomposed_latin_accents_stay_inside_words(self):
+        splitter = WhitespaceTokenSplitter()
+        text = "Café Nguyễn"
+        assert [t[0] for t in splitter(text, lower=False)] == ["Café", "Nguyễn"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Dr. Smith-Jones met @ann at foo@bar.com, https://x.org/a?b=1 (2024)!",
+            "Größe café naïve São Paulo русский",
+            "snake_case and kebab-case-words -leading trailing- 3.14",
+        ],
+    )
+    def test_text_without_combining_marks_splits_as_before(self, text):
+        previous = re.compile(
+            r"""(?:https?://[^\s]+|www\.[^\s]+)
+            |[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}
+            |@[a-z0-9_]+
+            |\w+(?:[-_]\w+)*
+            |\S""",
+            re.VERBOSE | re.IGNORECASE,
+        )
+        expected = [(m.group().lower(), m.start(), m.end()) for m in previous.finditer(text)]
+        assert list(WhitespaceTokenSplitter()(text, lower=True)) == expected
 
 
 class TestCharLevelSplitter:
@@ -511,6 +559,74 @@ class TestSchemaTransformerE2E:
 
 
 # ===========================================================================
+# Explicit gold spans
+# ===========================================================================
+
+
+# token offsets: Pushkin 0, street 1, runs 2, past 3, the 4, Pushkin 5, monument 6
+SPAN_TEXT = "Pushkin street runs past the Pushkin monument."
+
+
+class TestGoldSpans:
+    @staticmethod
+    def _entity_labels(processor, mentions, **kwargs):
+        schema = {"entities": {"street": mentions}}
+        return processor.transform_record(SPAN_TEXT, schema, **kwargs).structure_labels
+
+    def test_span_pins_one_occurrence_of_a_repeated_surface(self, processor_no_sampling):
+        p = processor_no_sampling
+        assert self._entity_labels(p, ["Pushkin"]) == [[1, [[[(0, 0), (5, 5)]]]]]
+        assert self._entity_labels(
+            p, [{"text": "Pushkin", "start": 0, "end": 7}]
+        ) == [[1, [[[(0, 0)]]]]]
+        assert self._entity_labels(
+            p, [{"text": "Pushkin", "start": 29, "end": 36}]
+        ) == [[1, [[[(5, 5)]]]]]
+
+    def test_span_must_cover_the_text_it_claims(self, processor_no_sampling):
+        with pytest.raises(ValueError, match="not 'Pushkin'"):
+            self._entity_labels(
+                processor_no_sampling, [{"text": "Pushkin", "start": 1, "end": 8}]
+            )
+
+    def test_span_past_max_len_is_not_found(self, processor_no_sampling):
+        p = processor_no_sampling
+        far = {"text": "Pushkin", "start": 29, "end": 36}
+        assert self._entity_labels(p, [far], max_len=3) == [[1, [[[(-1, -1)]]]]]
+        assert self._entity_labels(p, [far], max_len=50) == [[1, [[[(5, 5)]]]]]
+        # a span straddling the cut keeps the tokens that survived it
+        assert self._entity_labels(
+            p, [{"text": "street runs past", "start": 8, "end": 24}], max_len=3
+        ) == [[1, [[[(1, 2)]]]]]
+
+    def test_spans_and_surfaces_mix_within_one_structure(self, processor_no_sampling):
+        schema = {
+            "json_structures": [
+                {"place": {"name": {"text": "Pushkin", "start": 0, "end": 7}}},
+                {"place": {"name": "monument"}},
+            ]
+        }
+        record = processor_no_sampling.transform_record(SPAN_TEXT, schema)
+        assert record.structure_labels == [[2, [[[(0, 0)]], [[(6, 6)]]]]]
+
+    def test_span_is_rejected_for_a_choice_field(self, processor_no_sampling):
+        schema = {
+            "json_structures": [
+                {
+                    "place": {
+                        "kind": {
+                            "value": {"text": "Pushkin", "start": 0, "end": 7},
+                            "choices": ["street", "monument"],
+                        }
+                    }
+                }
+            ]
+        }
+        with pytest.raises(ValueError, match="cannot be pinned to a span"):
+            processor_no_sampling.transform_record(SPAN_TEXT, schema)
+
+
+# ===========================================================================
 # Classification Prefix
 # ===========================================================================
 
@@ -713,3 +829,84 @@ class TestTokenizationCache:
         after_second = processor._tokenize_cached.cache_info()
         assert after_second.hits > after_first.hits
         assert after_second.currsize >= after_first.currsize
+
+
+# ===========================================================================
+# find_unalignable_entities (Bug 1: pre-flight alignment check)
+# ===========================================================================
+
+
+class TestFindUnalignableEntities:
+    """Regression coverage for the "ABS" vs hyphen-compound-filename bug.
+
+    "ABS" is a real, exact character substring of the surrounding text, but
+    ``WhitespaceTokenSplitter``'s hyphen-continuation rule merges the whole
+    hyphen-joined run into a single token, so a standalone-token search for
+    "abs" finds nothing. A naive substring check (like
+    ``InputExample.validate()``'s ``mention.lower() in text.lower()``) would
+    say this is fine; ``find_unalignable_entities`` must not, because it
+    reuses the exact tokenizer/search training uses.
+    """
+
+    def test_hyphen_compound_filename_is_reported_unalignable(self, processor):
+        text = "See IMG Bosch-eBike-LEDRemote-ABS-BES3-MY2023.png for wiring."
+        result = processor.find_unalignable_entities(text, {"PartCode": "ABS"})
+        assert result == [
+            {"entity_type": "PartCode", "value": "ABS", "value_index": None}
+        ]
+
+    def test_naive_substring_check_would_have_missed_this(self, processor):
+        text = "See IMG Bosch-eBike-LEDRemote-ABS-BES3-MY2023.png for wiring."
+        # The exact "gap" this utility closes: a plain substring check thinks
+        # this annotation is fine, but it is not token-alignable.
+        assert "abs" in text.lower()
+        assert processor.find_unalignable_entities(text, {"PartCode": "ABS"})
+
+    def test_fully_alignable_schema_returns_empty_list(self, processor):
+        text = "John Smith lives in New York City."
+        result = processor.find_unalignable_entities(
+            text, {"person": ["John Smith"], "location": ["New York City"]}
+        )
+        assert result == []
+
+    def test_list_valued_field_reports_only_the_failing_value_with_its_index(
+        self, processor
+    ):
+        text = "See IMG Bosch-eBike-LEDRemote-ABS-BES3-MY2023.png for wiring. New York is nice."
+        result = processor.find_unalignable_entities(
+            text, {"tag": ["New York", "ABS"]}
+        )
+        assert result == [{"entity_type": "tag", "value": "ABS", "value_index": 1}]
+
+    def test_reused_search_matches_actual_training_behavior(self, processor):
+        """The utility must never drift from ``collate_fn_train``'s own check.
+
+        A value reported as alignable here must not raise during training,
+        and a value reported as unalignable here must raise during training.
+        """
+        text = "See IMG Bosch-eBike-LEDRemote-ABS-BES3-MY2023.png for wiring."
+        schema = {"entities": {"PartCode": "ABS"}}
+        assert processor.find_unalignable_entities(text, schema["entities"]) == [
+            {"entity_type": "PartCode", "value": "ABS", "value_index": None}
+        ]
+        with pytest.raises(ValueError, match="was not found"):
+            processor.collate_fn_train(
+                [(text, schema)], architecture="boundary", error_policy="raise"
+            )
+
+    def test_empty_and_none_values_are_skipped_not_reported(self, processor):
+        text = "John Smith lives in New York."
+        result = processor.find_unalignable_entities(
+            text, {"person": ["John Smith", ""], "ghost": None, "empty_list": []}
+        )
+        assert result == []
+
+    def test_selection_prefixed_values_are_out_of_scope(self, processor):
+        # [selection]-wrapped values are matched against the classification
+        # prefix, not document text; this utility only reasons about document
+        # alignment, so it must not misreport these as unalignable.
+        text = "John Smith lives in New York."
+        result = processor.find_unalignable_entities(
+            text, {"status": "[selection]anything"}
+        )
+        assert result == []

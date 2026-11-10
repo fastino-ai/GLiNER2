@@ -139,6 +139,7 @@ def test_hub_options_are_used_for_config_but_not_forwarded(monkeypatch):
         revision="release",
         token="secret",
         map_location="cpu",
+        attention_backend="disentangled_flash",
     )
 
     assert captured["config"] == (
@@ -148,7 +149,11 @@ def test_hub_options_are_used_for_config_but_not_forwarded(monkeypatch):
     assert captured["model"] == (
         "org/repo",
         (),
-        {"config": config, "map_location": "cpu"},
+        {
+            "config": config,
+            "map_location": "cpu",
+            "attention_backend": "disentangled_flash",
+        },
     )
 
 

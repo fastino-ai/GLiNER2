@@ -159,11 +159,11 @@ def test_boundary_model_wires_sparse_relation_loss():
     candidates = CandidateTensorBatch(
         indices=torch.tensor([[[[0, 1]], [[3, 4]]]]),
         proposal_logits=torch.zeros(1, 2, 1),
-        pair_logits=torch.full((1, 2, 1), 5.0),
+        pair_logits=torch.tensor([[[5.0], [2.0]]]),
         valid_mask=torch.ones(1, 2, 1, dtype=torch.bool),
         query_mask=torch.ones(1, 2, dtype=torch.bool),
     )
-    decoded = model._decode_relations(
+    decode_args = (
         0,
         {
             "rel_specs": [[{
@@ -183,19 +183,31 @@ def test_boundary_model_wires_sparse_relation_loss():
                 "works_for": "a person is employed by an organization",
             },
         },
+    )
+    decode_kwargs = dict(
         threshold=0.5,
         offset=0,
         start_map=[0, 6, 12, 16],
         end_map=[5, 11, 15, 20],
         text="Alice works for Acme",
         text_len=4,
-        include_confidence=False,
         include_spans=True,
+    )
+    decoded = model._decode_relations(
+        *decode_args, include_confidence=False, **decode_kwargs
     )
     assert decoded["works_for"] == [{
         "head": {"text": "Alice", "start": 0, "end": 5},
         "tail": {"text": "Acme", "start": 16, "end": 20},
     }]
+
+    scored = model._decode_relations(
+        *decode_args, include_confidence=True, **decode_kwargs
+    )["works_for"][0]
+    head_prob, tail_prob = torch.sigmoid(candidates.pair_logits).flatten().tolist()
+    assert scored["head"]["confidence"] == head_prob
+    assert scored["tail"]["confidence"] == tail_prob
+    assert 0.0 <= scored["confidence"] <= 1.0
 
 
 def test_relation_decoder_collapses_partial_and_repeated_mentions():
@@ -204,28 +216,29 @@ def test_relation_decoder_collapses_partial_and_repeated_mentions():
     edges = [
         {
             "score": 0.99,
-            "head": ("Anika Rao", 0, 9),
-            "tail": ("Helio", 20, 25),
+            "head": ("Anika Rao", 0, 9, 0.97),
+            "tail": ("Helio", 20, 25, 0.62),
         },
         {
             "score": 0.98,
-            "head": ("Anika Rao", 0, 9),
-            "tail": ("Helio Robotics", 20, 34),
+            "head": ("Anika Rao", 0, 9, 0.97),
+            "tail": ("Helio Robotics", 20, 34, 0.88),
         },
         {
             "score": 0.995,
-            "head": ("Anika Rao", 0, 9),
-            "tail": ("Helio Robotics", 80, 94),
+            "head": ("Anika Rao", 0, 9, 0.97),
+            "tail": ("Helio Robotics", 80, 94, 0.71),
         },
     ]
 
     decoded = BoundaryExtractor._deduplicate_relation_edges(edges)
 
     assert len(decoded) == 1
-    assert decoded[0]["head"] == ("Anika Rao", 0, 9)
+    assert decoded[0]["head"] == ("Anika Rao", 0, 9, 0.97)
     # The containing mention is canonical, and the closest occurrence wins
     # over a marginally higher-scoring distant cross-product.
-    assert decoded[0]["tail"] == ("Helio Robotics", 20, 34)
+    assert decoded[0]["tail"] == ("Helio Robotics", 20, 34, 0.88)
+    assert decoded[0]["score"] == 0.99
 
 
 def test_relation_description_survives_schema_roundtrip():

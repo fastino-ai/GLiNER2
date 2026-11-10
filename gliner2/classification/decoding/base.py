@@ -155,7 +155,7 @@ def build_problem(compiled, scores, config, *, active=None, full_retention_tasks
                                candidate_threshold=config.candidate_threshold,
                                cap=config.max_candidates_per_task,
                                rescued=rescued)
-        if len(retained) < spec.min_labels:
+        if len(retained) < spec.min_labels:          # too few finite logits
             retained = frozenset(spec.label_names)
         utils = task_utilities(spec, {l: logits[l] for l in retained})
         set_coupled = task in set_tasks

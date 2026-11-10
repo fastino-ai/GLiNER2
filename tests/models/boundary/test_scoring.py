@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from gliner2.configuration import BoundaryHeadSettings
@@ -85,7 +86,8 @@ def test_scorer_finite_gradients():
     assert torch.isfinite(query_states.grad).all()
 
 
-def test_explicit_span_scoring_matches_selected_candidate_logits():
+@pytest.mark.parametrize("candidate_pool", ["per_query", "shared"])
+def test_explicit_span_scoring_matches_selected_candidate_logits(candidate_pool):
     torch.manual_seed(19)
     settings = BoundaryHeadSettings(
         boundary_dim=8,
@@ -99,6 +101,7 @@ def test_explicit_span_scoring_matches_selected_candidate_logits():
         max_gold_per_query=6,
         end_block_size=4,
         dropout=0.0,
+        candidate_pool=candidate_pool,
     )
     head = BoundaryHead(8, settings, query_dim=8).eval()
     token_states = torch.randn(2, 7, 8)

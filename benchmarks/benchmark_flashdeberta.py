@@ -1,13 +1,13 @@
 """
-Benchmark: FlashDeberta vs Standard DebertaV2 for NER Inference
+Benchmark: DeBERTa attention backends for full GLiNER2 NER inference
 
 Compares end-to-end NER extraction latency between the standard HuggingFace
-DebertaV2 backend and the FlashDeberta optimized backend.
+DebertaV2 backend, FlashDeBERTa, and DisentangledFlash.
 
 Test matrix:
   - Batch sizes: 1, 2, 4, 8
   - Sequence lengths: 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 tokens
-  - Backends: standard (AutoModel) vs FlashDeberta
+  - Backends: standard (AutoModel), FlashDeBERTa, DisentangledFlash
 
 Protocol:
   - Model loaded once per backend (separate processes via subprocess)
@@ -18,12 +18,13 @@ Protocol:
   - CUDA synchronize before all timing points on GPU
 
 Usage:
-  # Full benchmark (runs both backends, requires flashdeberta installed):
+  # Full benchmark (runs all backends):
   python benchmarks/benchmark_flashdeberta.py
 
   # Single backend (useful for debugging):
   python benchmarks/benchmark_flashdeberta.py --backend standard
   python benchmarks/benchmark_flashdeberta.py --backend flash
+  python benchmarks/benchmark_flashdeberta.py --backend disentangled_flash
 
   # Custom settings:
   python benchmarks/benchmark_flashdeberta.py --model fastino/gliner2-base-v1 --dtype fp16 --warmup 10 --measure 30
@@ -152,13 +153,15 @@ def run_single_backend(
     from gliner2 import AutoExtractor
 
     print(f"\nLoading model ({backend} backend)...")
-    load_kwargs = {"use_flashdeberta": backend == "flash"}
+    load_kwargs = {
+        "attention_backend": "flashdeberta" if backend == "flash" else "standard"
+    }
     if architecture != "auto":
         load_kwargs["architecture"] = architecture
     model = AutoExtractor.from_pretrained(model_name, **load_kwargs)
     model.eval()
 
-    # Detect actual backend
+    # Detect the construction-time backend.
     encoder_class = model.encoder.__class__.__name__
     print(f"  Encoder class: {encoder_class}")
     if backend == "flash" and encoder_class != "FlashDebertaV2Model":
@@ -175,12 +178,20 @@ def run_single_backend(
     if device.type == "cuda":
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
     model = model.to(device=device, dtype=torch_dtype)
+    if backend == "disentangled_flash":
+        model.enable_disentangled_flash()
+        if not getattr(model, "_disentangled_flash_backend", None):
+            raise RuntimeError("DisentangledFlash was requested but did not activate")
+        encoder_class = (
+            f"{encoder_class} -> {model.encoder.encoder.__class__.__name__}"
+        )
     print(f"  Device: {device}")
     print(f"  Dtype: {resolved_dtype}")
     print(f"  Architecture: {model.architecture}")
     print(f"  Mode: {'encoder-only' if encoder_only else 'end-to-end'}")
     print(f"  PyTorch: {torch.__version__}")
     print(f"  FlashDeBERTa: {package_version('flashdeberta')}")
+    print(f"  DisentangledFlash: {package_version('disentangled-flash')}")
 
     tokenizer = model.processor.tokenizer
 
@@ -275,6 +286,12 @@ def run_single_backend(
         "mode": "encoder-only" if encoder_only else "end-to-end",
         "torch_version": torch.__version__,
         "flashdeberta_version": package_version("flashdeberta"),
+        "disentangled_flash_version": package_version("disentangled-flash"),
+        "selected_attention_backend": (
+            getattr(model, "_disentangled_flash_backend", None)
+            if backend == "disentangled_flash"
+            else backend
+        ),
         "model_name": model_name,
         "n_warmup": n_warmup,
         "n_measure": n_measure,
@@ -390,37 +407,40 @@ def _betainc(a, b, x):
 
 
 def compare_results(
-    standard: Dict[str, Any],
-    flash: Dict[str, Any],
+    baseline: Dict[str, Any],
+    candidate: Dict[str, Any],
 ) -> None:
     """Print comparison table with speedups and significance tests."""
     for key in ("model_name", "device", "dtype", "architecture", "mode"):
-        if standard.get(key) != flash.get(key):
+        if baseline.get(key) != candidate.get(key):
             raise ValueError(
                 f"Cannot compare results with different {key}: "
-                f"{standard.get(key)!r} != {flash.get(key)!r}"
+                f"{baseline.get(key)!r} != {candidate.get(key)!r}"
             )
 
+    baseline_name = baseline["backend"]
+    candidate_name = candidate["backend"]
+
     print(f"\n{'=' * 90}")
-    print("  FlashDeberta Benchmark Results")
+    print(f"  {candidate_name} vs {baseline_name} Benchmark Results")
     print(f"{'=' * 90}")
-    print(f"  Model:   {standard['model_name']}")
-    print(f"  Device:  {standard['device']}")
-    print(f"  Dtype:   {standard['dtype']}")
-    print(f"  Architecture: {standard['architecture']}")
-    print(f"  Mode:    {standard['mode']}")
-    print(f"  Standard encoder: {standard['encoder_class']}")
-    print(f"  Flash encoder:    {flash['encoder_class']}")
-    print(f"  Warmup: {standard['n_warmup']}  Measured: {standard['n_measure']}")
+    print(f"  Model:   {baseline['model_name']}")
+    print(f"  Device:  {baseline['device']}")
+    print(f"  Dtype:   {baseline['dtype']}")
+    print(f"  Architecture: {baseline['architecture']}")
+    print(f"  Mode:    {baseline['mode']}")
+    print(f"  Baseline encoder:  {baseline['encoder_class']}")
+    print(f"  Candidate encoder: {candidate['encoder_class']}")
+    print(f"  Warmup: {baseline['n_warmup']}  Measured: {baseline['n_measure']}")
     print(f"{'=' * 90}")
 
     header = (
         f"  {'Condition':<20} "
-        f"{'Std mean':>10} {'Std med':>10} "
-        f"{'Flash mean':>10} {'Flash med':>10} "
+        f"{'Base mean':>10} {'Base med':>10} "
+        f"{'Cand mean':>10} {'Cand med':>10} "
         f"{'Speedup':>9} "
         f"{'p-value':>9} "
-        f"{'Std mem':>9} {'Flash mem':>9} {'Mem ratio':>9}"
+        f"{'Base mem':>9} {'Cand mem':>9} {'Mem ratio':>9}"
     )
     print(header)
     print(f"  {'-' * 20} {'-' * 10} {'-' * 10} {'-' * 10} {'-' * 10} "
@@ -430,9 +450,9 @@ def compare_results(
     all_mem_ratios = []
     significant_conditions = 0
 
-    for cond in standard["conditions"]:
-        std = standard["conditions"][cond]
-        fla = flash["conditions"][cond]
+    for cond in baseline["conditions"]:
+        std = baseline["conditions"][cond]
+        fla = candidate["conditions"][cond]
 
         std_timings = std["timings"]
         fla_timings = fla["timings"]
@@ -462,7 +482,7 @@ def compare_results(
     print("  SUMMARY")
     print(f"{'=' * 90}")
 
-    total_conds = len(standard["conditions"])
+    total_conds = len(baseline["conditions"])
 
     if all_speedups:
         print(f"  Conditions tested: {total_conds}")
@@ -474,7 +494,7 @@ def compare_results(
         )
 
     if all_mem_ratios:
-        print(f"\n  Peak memory ratio (std / flash, >1x = flash uses less):")
+        print("\n  Peak memory ratio (baseline / candidate, >1x = candidate uses less):")
         print(f"  Memory ratio range: {min(all_mem_ratios):.2f}x to {max(all_mem_ratios):.2f}x")
         print(f"  Overall median memory ratio: {statistics.median(all_mem_ratios):.2f}x")
 
@@ -531,11 +551,13 @@ def run_subprocess_backend(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark FlashDeberta vs standard DebertaV2 for NER inference"
+        description="Benchmark GLiNER2 DeBERTa attention backends"
     )
     parser.add_argument(
-        "--backend", choices=["standard", "flash", "both"], default="both",
-        help="Which backend to benchmark (default: both)"
+        "--backend",
+        choices=["standard", "flash", "disentangled_flash", "both", "all"],
+        default="all",
+        help="Which backend to benchmark (default: all)"
     )
     parser.add_argument(
         "--model", default="fastino/gliner2-base-v1",
@@ -562,7 +584,7 @@ def main():
     args = parser.parse_args()
 
     # Single-backend mode (used by subprocess or direct invocation)
-    if args.backend in ("standard", "flash"):
+    if args.backend in ("standard", "flash", "disentangled_flash"):
         result = run_single_backend(
             args.model,
             args.backend,
@@ -582,9 +604,9 @@ def main():
             print(json.dumps(result, indent=2, default=str))
         return
 
-    # Both backends — run each in a separate subprocess for clean state
+    # Comparison mode — run each backend in a separate subprocess for clean state.
     print("=" * 90)
-    print("  FlashDeberta NER Benchmark")
+    print("  GLiNER2 DeBERTa Attention Backend Benchmark")
     print(f"  Model: {args.model}")
     print(f"  Warmup: {args.warmup}  Measured: {args.measure}")
     print(f"  Dtype: {args.dtype or 'auto (fp16 on CUDA)'}")
@@ -594,6 +616,7 @@ def main():
 
     std_file = "/tmp/flashdeberta_bench_standard.json"
     flash_file = "/tmp/flashdeberta_bench_flash.json"
+    disentangled_file = "/tmp/flashdeberta_bench_disentangled.json"
 
     std_result = run_subprocess_backend(
         "standard",
@@ -616,19 +639,45 @@ def main():
         flash_file,
     )
 
-    if std_result is None or flash_result is None:
-        print("\nERROR: One or both backends failed. Cannot compare.")
+    disentangled_result = None
+    if args.backend == "all":
+        disentangled_result = run_subprocess_backend(
+            "disentangled_flash",
+            args.model,
+            args.warmup,
+            args.measure,
+            args.dtype,
+            args.architecture,
+            args.encoder_only,
+            disentangled_file,
+        )
+
+    required_results = [std_result, flash_result]
+    if args.backend == "all":
+        required_results.append(disentangled_result)
+    if any(result is None for result in required_results):
+        print("\nERROR: One or more backends failed. Cannot compare.")
         if std_result is None:
             print("  Standard backend failed.")
         if flash_result is None:
             print("  Flash backend failed. Is the 'flashdeberta' package installed?")
+        if args.backend == "all" and disentangled_result is None:
+            print(
+                "  DisentangledFlash backend failed. Is the "
+                "'disentangled-flash' package installed?"
+            )
         sys.exit(1)
 
     compare_results(std_result, flash_result)
+    if disentangled_result is not None:
+        compare_results(std_result, disentangled_result)
+        compare_results(flash_result, disentangled_result)
 
     # Save combined results
-    combined_file = "benchmarks/flashdeberta_results.json"
+    combined_file = "benchmarks/attention_backend_results.json"
     combined = {"standard": std_result, "flash": flash_result}
+    if disentangled_result is not None:
+        combined["disentangled_flash"] = disentangled_result
     with open(combined_file, "w") as f:
         json.dump(combined, f, indent=2, default=str)
     print(f"\n  Full results saved to {combined_file}")

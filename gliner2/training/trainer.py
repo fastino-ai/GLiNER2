@@ -77,9 +77,6 @@ from gliner2.training.sampler import (
     LengthGroupedSampler,
 )
 
-from peft import PeftModel
-from peft.tuners.lora.layer import LoraLayer as _PeftLoraLayer
-
 logger = logging.getLogger(__name__)
 
 
@@ -253,6 +250,7 @@ class ExtractorCollator:
             build_targets: Optional[bool] = None,
             on_capacity_exceeded: str = "raise",
             allow_invalid_samples: bool = False,
+            dedupe_contained_entity_spans: bool = True,
     ):
         self.processor = processor
         self.is_training = is_training
@@ -267,6 +265,10 @@ class ExtractorCollator:
         # skip_sample); defaults to the no-silent-loss "raise".
         self.on_capacity_exceeded = on_capacity_exceeded
         self.allow_invalid_samples = allow_invalid_samples
+        # Filter phantom contained-span entity matches (see
+        # gliner2.processing.boundary_preprocessing._dedupe_contained_spans);
+        # defaults to the corrected behavior.
+        self.dedupe_contained_entity_spans = dedupe_contained_entity_spans
 
     def __call__(self, batch: List[Tuple[str, Dict]]):
         """
@@ -283,6 +285,7 @@ class ExtractorCollator:
                 max_len=self.max_len, architecture=self.architecture,
                 max_gold_per_query=self.max_gold_per_query,
                 on_capacity_exceeded=self.on_capacity_exceeded,
+                dedupe_contained_entity_spans=self.dedupe_contained_entity_spans,
             )
             if self.allow_invalid_samples:
                 kwargs.update(
@@ -296,6 +299,7 @@ class ExtractorCollator:
                 build_targets=self.build_targets,
                 max_gold_per_query=self.max_gold_per_query,
                 on_capacity_exceeded=self.on_capacity_exceeded,
+                dedupe_contained_entity_spans=self.dedupe_contained_entity_spans,
             )
             if self.allow_invalid_samples:
                 kwargs.update(
@@ -592,16 +596,17 @@ class ExtractorTrainer:
 
     def _setup_lora(self):
         """Setup LoRA for parameter-efficient fine-tuning if enabled."""
-        if self.config.use_lora and isinstance(self.model, PeftModel):
+        if not self.config.use_lora:
+            logger.info("LoRA is disabled")
+            return
+        from gliner2.training.lora import PeftModel, _PeftLoraLayer
+
+        if isinstance(self.model, PeftModel):
             from gliner2.training.session_adapters import validate_loaded_adapter
             validate_loaded_adapter(self.model, self.config)
             self.lora_layers = {n: m for n, m in self.model.named_modules() if isinstance(m, _PeftLoraLayer)}
             self.model._lora_layers = self.lora_layers
             return
-        if not self.config.use_lora:
-            logger.info("LoRA is disabled")
-            return
-
         for p in self.model.parameters():
             p.requires_grad = False
         logger.info("Froze all model parameters for LoRA training")
@@ -859,6 +864,16 @@ class ExtractorTrainer:
             return 0.0
         return max(1.0 - step / anneal_steps, 0.0)
 
+    @staticmethod
+    def _ddp_full_touch(model) -> torch.Tensor:
+        """An exactly-zero term reaching EVERY trainable parameter on every step, so plain DDP sees the same used set.
+
+        Which parameters receive a gradient varies by batch (classifier, count head, relation and record heads each
+        only on batches carrying their task). Plain DDP (find_unused_parameters=False) then fails "Expected to have
+        finished reduction"; find_unused_parameters=True cannot be used because forward returns tensors that are not
+        part of the loss. Touching every parameter every step keeps the used set constant and every gradient reduced."""
+        return sum(p.sum() * 0.0 for p in model.parameters() if p.requires_grad)
+
     def _backward_one(
         self,
         batch,
@@ -965,6 +980,8 @@ class ExtractorTrainer:
                     reported_loss = loss.detach()
                     if self.config.gradient_accumulation_steps > 1:
                         loss = loss / self.config.gradient_accumulation_steps
+                    if self.is_distributed:
+                        loss = loss + self._ddp_full_touch(model)
 
                 if self.config.fp16:
                     self.scaler.scale(loss).backward()
@@ -1274,6 +1291,7 @@ class ExtractorTrainer:
             build_targets=None if is_training else True,
             on_capacity_exceeded=self.config.on_capacity_exceeded,
             allow_invalid_samples=self.config.allow_invalid_samples,
+            dedupe_contained_entity_spans=self.config.dedupe_contained_entity_spans,
         )
 
         # Fix Bug #1 & #9: Handle small datasets
@@ -1871,13 +1889,15 @@ class ExtractorTrainer:
             trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         else:
             # Full model save: merge LoRA weights if present. Import both
-            # helpers up front: ``merge_lora_weights`` was previously
+            # helpers together: ``merge_lora_weights`` was previously
             # referenced without an import, raising NameError on the first
-            # full-checkpoint save under LoRA.
-            from gliner2.training.lora import merge_lora_weights, unmerge_lora_weights
-
+            # full-checkpoint save under LoRA. The import stays inside the
+            # LoRA branch because it needs peft, which non-LoRA training
+            # does not.
             lora_was_merged = False
             if self.config.use_lora and self.lora_layers:
+                from gliner2.training.lora import merge_lora_weights, unmerge_lora_weights
+
                 first_lora_layer = next(iter(self.lora_layers.values()))
                 if not first_lora_layer.merged:
                     num_merged = merge_lora_weights(self.model)
@@ -1962,6 +1982,8 @@ class ExtractorTrainer:
         is_adapter = (checkpoint_dir / "adapter_config.json").exists()
 
         if is_adapter:
+            from gliner2.training.lora import PeftModel, _PeftLoraLayer
+
             logger.info("Loading LoRA adapter from %s", checkpoint_path)
             base = self.model.get_base_model() if isinstance(self.model, PeftModel) else self.model
             self.model = PeftModel.from_pretrained(base, str(checkpoint_dir))

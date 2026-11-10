@@ -38,10 +38,12 @@ from gliner2.models.loading import (
     apply_post_load_options,
     checkpoint_file,
     load_checkpoint_state_dict,
+    pop_attention_backend,
+    pop_disentangled_flash_options,
     reconcile_encoder_embeddings,
     split_load_kwargs,
 )
-from gliner2.models.boundary.encoding import BoundaryEncoder
+from gliner2.models.boundary.encoding import BoundaryEncoder, BoundaryEncoding
 from gliner2.models.boundary.constants import MASK_LOGIT
 from gliner2.models.boundary.heads import BoundaryMarginals, BoundaryQueryHead
 from gliner2.models.boundary.losses import (
@@ -326,6 +328,22 @@ class BoundaryHead(nn.Module):
             query_states,
             query_mask,
         )
+        inside_prefix = (
+            marginals.inside_prefix if self.use_inside_evidence else None
+        )
+        if self.settings.candidate_pool == "shared":
+            return self._score_explicit_spans_shared(
+                encoding,
+                marginals,
+                inside_prefix,
+                text_lengths,
+                token_states,
+                text_mask,
+                query_states,
+                query_mask,
+                indices,
+                legal,
+            )
         compatibility = self.boundary_proposer.score_explicit_pairs(
             encoding.states, query_states, indices, legal
         )
@@ -334,9 +352,6 @@ class BoundaryHead(nn.Module):
             logits=None,
             valid_mask=legal,
             compat_logits=compatibility,
-        )
-        inside_prefix = (
-            marginals.inside_prefix if self.use_inside_evidence else None
         )
         return self.pair_scorer(
             encoding.states,
@@ -350,6 +365,57 @@ class BoundaryHead(nn.Module):
             text_mask,
             inside_prefix_mean=marginals.inside_prefix_mean,
         )
+
+    def _score_explicit_spans_shared(
+        self,
+        encoding: BoundaryEncoding,
+        marginals: BoundaryMarginals,
+        inside_prefix: Optional[torch.Tensor],
+        text_lengths: torch.LongTensor,
+        token_states: torch.Tensor,
+        text_mask: torch.BoolTensor,
+        query_states: torch.Tensor,
+        query_mask: torch.BoolTensor,
+        indices: torch.LongTensor,
+        legal: torch.BoolTensor,
+    ) -> torch.Tensor:
+        # pooled spans attend to each other, so score the requested spans inside
+        # the pool
+        pooled = self.shared_pool_builder(
+            encoding.states,
+            encoding.mask,
+            query_mask,
+            marginals.start_logits,
+            marginals.end_logits,
+            gold_pairs=indices,
+            gold_mask=legal,
+            gold_injection_prob=1.0,
+        )
+        logits, _ = self.shared_pool_scorer(
+            encoding.states,
+            query_states,
+            query_mask,
+            pooled,
+            marginals.start_logits,
+            marginals.end_logits,
+            inside_prefix,
+            text_lengths,
+            token_states,
+            text_mask,
+            inside_prefix_mean=marginals.inside_prefix_mean,
+        )
+        match = (
+            (indices.unsqueeze(3) == pooled.indices[:, None, None]).all(-1)
+            & pooled.mask[:, None, None]
+        )
+        if (legal & ~match.any(-1)).any():
+            raise ValueError(
+                "explicit spans exceed the shared candidate pool "
+                f"(pool_size={self.settings.pool_size})"
+            )
+        position = match.long().argmax(-1)
+        scores = logits.transpose(1, 2).gather(2, position)
+        return scores.masked_fill(~legal, MASK_LOGIT)
 
     def forward(
         self,
@@ -996,7 +1062,7 @@ def _group_scored_candidates(
     ]
     if bi.numel() == 0:
         return out
-    rows = torch.stack(
+    rows_device = torch.stack(
         (
             bi,
             qi,
@@ -1004,8 +1070,19 @@ def _group_scored_candidates(
             candidates.indices[bi, qi, ci, 1],
         ),
         dim=-1,
-    ).cpu().numpy()
-    scores = probs[bi, qi, ci].float().cpu().numpy()
+    )
+    scores_device = probs[bi, qi, ci].float()
+    if rows_device.device.type == "cuda":
+        rows_cpu = torch.empty_like(rows_device, device="cpu", pin_memory=True)
+        scores_cpu = torch.empty_like(scores_device, device="cpu", pin_memory=True)
+        rows_cpu.copy_(rows_device, non_blocking=True)
+        scores_cpu.copy_(scores_device, non_blocking=True)
+        torch.cuda.current_stream(rows_device.device).synchronize()
+    else:
+        rows_cpu = rows_device.cpu()
+        scores_cpu = scores_device.cpu()
+    rows = rows_cpu.numpy()
+    scores = scores_cpu.numpy()
     segment_ids = rows[:, 0] * q + rows[:, 1]
     change_points = (
         (segment_ids[1:] != segment_ids[:-1]).nonzero()[0] + 1
@@ -1281,8 +1358,8 @@ class BoundaryExtractorModel(BaseExtractorModel):
         use_dora: bool = False,
     ) -> "PeftModel":
         """Apply PEFT LoRA adapters and return the wrapped boundary model."""
-        from peft import LoraConfig as PeftLoraConfig, get_peft_model
         from gliner2.training.lora import _cast_lora_dtype, _resolve_targets
+        from peft import LoraConfig as PeftLoraConfig, get_peft_model
 
         base_id = (
             getattr(self, "name_or_path", "")
@@ -2112,7 +2189,10 @@ class BoundaryExtractorModel(BaseExtractorModel):
         quantize = model_options.pop("quantize", False)
         compile_model = model_options.pop("compile", False)
         map_location = model_options.pop("map_location", None)
-        use_flashdeberta = model_options.pop("use_flashdeberta", None)
+        attention_backend, use_flashdeberta = pop_attention_backend(
+            model_options
+        )
+        disentangled_flash_options = pop_disentangled_flash_options(model_options)
         word_splitter = model_options.pop("word_splitter", None)
 
         if config is None:
@@ -2165,6 +2245,8 @@ class BoundaryExtractorModel(BaseExtractorModel):
             quantize=quantize,
             compile_model=compile_model,
             compile_dynamic=True,
+            attention_backend=attention_backend,
+            disentangled_flash_options=disentangled_flash_options,
         )
 
 

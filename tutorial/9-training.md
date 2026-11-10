@@ -12,7 +12,8 @@ Load checkpoints with `AutoExtractor.from_pretrained(...)` — it works for both
 4. [Training Configuration](#training-configuration)
 5. [LoRA Training](#lora-training)
 6. [Advanced Topics](#advanced-topics)
-7. [Troubleshooting](#troubleshooting)
+7. [Hosted Training (Fastino API)](#hosted-training-fastino-api)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -447,6 +448,39 @@ print(f"Valid: {report['valid']}, Invalid: {report['invalid']}")
 # Print statistics
 dataset.print_stats()
 ```
+
+`TrainingDataset.validate()`/`InputExample.validate()` check that an entity
+value is an exact *character substring* of the text (case-insensitive).
+That is necessary but not sufficient for the boundary architecture: training
+also requires the value to align to a contiguous run of *tokens*, and the
+word splitter's hyphen/underscore continuation rule (`\w+(?:[-_]\w+)*`) means
+a value can be a real substring yet still fail token alignment -- e.g.
+`"ABS"` inside `"...LEDRemote-ABS-BES3-MY2023.png..."` is swallowed into one
+token by the surrounding hyphen-joined run. A mismatch like this passes
+`validate()` but raises inside `collate_fn_train`/`ExtractorCollator` with
+`architecture="boundary"`. Use
+`SchemaTransformer.find_unalignable_entities(text, entities)` on a single
+`(text, schema)` example to catch this ahead of submitting a full dataset:
+
+```python
+from gliner2 import AutoExtractor
+
+model = AutoExtractor.from_pretrained("fastino/gliner2.5-base-v1")
+processor = model.processor  # the SchemaTransformer backing this model
+
+unalignable = processor.find_unalignable_entities(
+    "See IMG Bosch-eBike-LEDRemote-ABS-BES3-MY2023.png for wiring.",
+    {"PartCode": "ABS"},
+)
+# [{'entity_type': 'PartCode', 'value': 'ABS', 'value_index': None}]
+if unalignable:
+    print(f"{len(unalignable)} listed value(s) will not token-align:", unalignable)
+```
+
+An empty list means every listed value aligns and will not raise during
+training. It reuses the exact tokenizer and sublist search
+`collate_fn_train` uses to build gold targets, so it can never drift from
+actual training behavior.
 
 ### Data Splitting and Management
 
@@ -1045,6 +1079,29 @@ trainer.train(train_data=augmented_dataset)
 
 ---
 
+## Hosted Training (Fastino API)
+
+Everything above runs locally. If you'd rather not manage GPUs, the Fastino API can fine-tune, evaluate, and serve GLiNER models for you, which is usually faster than training locally.
+
+| | |
+|---|---|
+| Base URL | `https://api.fastino.ai` |
+| Auth | `X-API-Key: $FASTINO_API_KEY` (get a key at [agent.fastino.ai](https://agent.fastino.ai)) |
+| Request/response schemas | [`https://api.fastino.ai/openapi.json`](https://api.fastino.ai/openapi.json) |
+| Agent workflow | [`SKILL.md`](https://huggingface.co/fastino/gliner2.5-base-v1/blob/main/SKILL.md) (also shipped in each GLiNER model repo on Hugging Face) |
+
+The typical flow:
+
+1. **Pick a base model:** `GET /v1/base-models?supports_training=true`. Check `encoder_features` before relying on a capability.
+2. **Upload a dataset:** `POST /v1/datasets/upload/url` returns a presigned URL and a `dataset_id`. `PUT` your file to that URL, call `POST /v1/datasets/upload/process` with the `dataset_id`, then poll `GET /v1/datasets/{name}` until it is ready.
+3. **Train:** `POST /v1/training-jobs` with `model_name`, `base_model`, and `datasets`. Optional fields include `training_type` (`lora` or `full`), `nr_epochs`, and `encoder_learning_rate` / `task_learning_rate`.
+4. **Monitor:** `GET /v1/training-jobs/{job_id}`, plus `/logs` and `/checkpoints`.
+5. **Serve:** `POST /v1/training-jobs/{job_id}/checkpoints/{checkpoint_id}/deploy`, then call the model through `POST /v1/chat/completions` with a GLiNER `schema`.
+
+See the OpenAPI spec for exact field names and the accepted dataset formats.
+
+---
+
 ## Troubleshooting
 
 ### Out of Memory (OOM)
@@ -1122,6 +1179,17 @@ example = InputExample(
     text="John works here",
     entities={"person": ["John"]}  # OK
 )
+
+# 1b. Entity IS in text but does not token-align (boundary architecture only)
+# example.validate() passes ("abs" is a substring), but this will still raise
+# from collate_fn_train/ExtractorCollator, because the tokenizer's hyphen
+# continuation rule swallows the whole hyphen-joined run into one token.
+processor.find_unalignable_entities(
+    "See IMG Bosch-eBike-LEDRemote-ABS-BES3-MY2023.png for wiring.",
+    {"PartCode": "ABS"},
+)
+# [{'entity_type': 'PartCode', 'value': 'ABS', 'value_index': None}]
+# Fix: re-annotate with a token-aligned surface, or drop the value.
 
 # 2. Empty entities
 example = InputExample(

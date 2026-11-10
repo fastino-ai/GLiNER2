@@ -243,6 +243,100 @@ class DenseRecordBatchOutput:
     group_mask: torch.BoolTensor         # [B,R]
 
 
+@dataclass
+class PackedRecordDecodeOutput:
+    """Selected record instances copied to CPU for decoding."""
+
+    sample_indices: torch.LongTensor
+    group_indices: torch.LongTensor
+    instance_indices: torch.LongTensor
+    object_logits: torch.Tensor
+    assign_logits: torch.Tensor
+    field_membership: torch.BoolTensor
+    pool_spans: torch.LongTensor
+
+
+def packed_record_group_to_ragged(
+    output: PackedRecordDecodeOutput,
+    spec: RecordSpec,
+    sample_index: int,
+    group_index: int,
+) -> RecordGroupOutput:
+    """Build one legacy decoder group from packed CPU tensors."""
+    rows = torch.nonzero(
+        (output.sample_indices == sample_index)
+        & (output.group_indices == group_index),
+        as_tuple=False,
+    ).flatten()
+    instance_indices = output.instance_indices[rows]
+    pool_spans = output.pool_spans[sample_index]
+    field_specs = list(spec.fields)
+    field_query_ids = [field.query_id for field in field_specs]
+    field_spans: List[torch.LongTensor] = []
+    field_masks: List[torch.BoolTensor] = []
+    field_logits: List[torch.Tensor] = []
+    assign_logits: List[torch.Tensor] = []
+
+    for field_index, _field in enumerate(field_specs):
+        membership = output.field_membership[
+            sample_index, group_index, field_index
+        ]
+        candidate_indices = torch.nonzero(membership, as_tuple=False).flatten()
+        field_spans.append(pool_spans[candidate_indices])
+        field_masks.append(torch.ones_like(candidate_indices, dtype=torch.bool))
+        field_logits.append(
+            output.object_logits.new_zeros(candidate_indices.shape[0])
+        )
+        columns = torch.cat(
+            (candidate_indices.new_zeros(1), candidate_indices + 1)
+        )
+        field_assignments = output.assign_logits[rows, field_index]
+        assign_logits.append(field_assignments[:, columns])
+
+    instance_spans: List[Optional[Tuple[int, int]]] = []
+    instance_seed: List[Optional[Tuple[int, int]]] = []
+    anchor_field_index = next(
+        (
+            index
+            for index, field in enumerate(field_specs)
+            if field.query_id == spec.anchor_query_id
+        ),
+        None,
+    )
+    for pool_index in instance_indices.tolist():
+        if spec.mode == "natural" and anchor_field_index is not None:
+            span = pool_spans[pool_index]
+            local_candidates = torch.nonzero(
+                output.field_membership[
+                    sample_index, group_index, anchor_field_index
+                ],
+                as_tuple=False,
+            ).flatten()
+            local_index = int(
+                torch.nonzero(
+                    local_candidates == pool_index, as_tuple=False
+                )[0]
+            )
+            instance_seed.append((anchor_field_index, local_index))
+            instance_spans.append((int(span[0]), int(span[1])))
+        else:
+            instance_seed.append(None)
+            instance_spans.append(None)
+
+    return RecordGroupOutput(
+        spec=spec,
+        object_logits=output.object_logits[rows],
+        assign_logits=assign_logits,
+        field_query_ids=field_query_ids,
+        field_specs=field_specs,
+        field_spans=field_spans,
+        field_cand_mask=field_masks,
+        field_cand_logits=field_logits,
+        instance_seed=instance_seed,
+        instance_spans=instance_spans,
+    )
+
+
 class RecordHead(nn.Module):
     """Unified natural / latent / anchorless instance formation head.
 
@@ -680,6 +774,9 @@ __all__ = [
     "RecordSetDecoder",
     "RecordGroupOutput",
     "DenseRecordGroupOutput",
+    "DenseRecordBatchOutput",
+    "PackedRecordDecodeOutput",
+    "packed_record_group_to_ragged",
     "RecordHead",
     "DecodedRecord",
     "decode_group",

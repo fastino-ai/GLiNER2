@@ -110,6 +110,7 @@ def test_from_pretrained_threads_flashdeberta_option(
         encoder_config=None,
         tokenizer=None,
         use_flashdeberta=None,
+        word_splitter=None,
     ):
         torch.nn.Module.__init__(self)
         self.config = received_config

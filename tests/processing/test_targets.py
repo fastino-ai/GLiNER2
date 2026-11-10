@@ -19,6 +19,7 @@ from gliner2.processing.targets import (
     pad_target_graphs,
     apply_truncation_policy,
     normalize_surface_occurrences,
+    SurfaceSpan,
 )
 
 
@@ -69,6 +70,24 @@ def test_unicode_casefold_does_not_shift_offsets():
     tok_s, tok_e = char_span_to_word_boundaries(starts[0], ends[0], starts, ends)
     cs, ce = word_boundaries_to_char_span(tok_s, tok_e, starts, ends)
     assert text[cs:ce] == "İstanbul"
+
+
+# ---------------------------------------------------------------------------
+# Surface spans
+# ---------------------------------------------------------------------------
+
+def test_surface_span_requires_text_and_offsets():
+    span = SurfaceSpan.from_mapping({"text": "Pushkin", "start": 0, "end": 7})
+    assert (span.text, span.start, span.end) == ("Pushkin", 0, 7)
+
+    with pytest.raises(ValueError, match="missing"):
+        SurfaceSpan.from_mapping({"text": "Pushkin", "start": 0})
+    with pytest.raises(ValueError, match="end > start"):
+        SurfaceSpan.from_mapping({"text": "Pushkin", "start": 7, "end": 7})
+    with pytest.raises(ValueError, match="non-negative"):
+        SurfaceSpan.from_mapping({"text": "Pushkin", "start": -1, "end": 7})
+    with pytest.raises(ValueError, match="integers"):
+        SurfaceSpan.from_mapping({"text": "Pushkin", "start": "0", "end": 7})
 
 
 # ---------------------------------------------------------------------------

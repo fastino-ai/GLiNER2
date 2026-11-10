@@ -19,9 +19,19 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from peft import LoraConfig as PeftLoraConfig, get_peft_model, PeftModel
-from peft.tuners.lora.layer import LoraLayer as _PeftLoraLayer
 from safetensors.torch import load_file, save_file
+
+try:
+    from peft import LoraConfig as PeftLoraConfig, get_peft_model, PeftModel
+    from peft.tuners.lora.layer import LoraLayer as _PeftLoraLayer
+except ModuleNotFoundError as exc:
+    if exc.name != "peft":
+        raise
+    raise ImportError(
+        "LoRA support requires the optional 'peft' package, which is not installed. "
+        'Install it with: pip install "gliner2[train]" for training, or '
+        'pip install "gliner2[local]" for inference.'
+    ) from exc
 
 from gliner2.training.lora_targets import (  # noqa: F401 - compatibility exports
     ENCODER_PATTERNS,
@@ -324,7 +334,26 @@ def unload_lora_adapter(model: nn.Module) -> int:
         count = sum(1 for m in model.modules() if isinstance(m, _PeftLoraLayer))
         model.unload()
         return count
-    return 0
+    # `model` is not itself a `PeftModel` instance whenever it went through
+    # load_lora_adapter()'s legacy (non-peft-native) path: that path calls
+    # get_peft_model(model, ...), which injects LoraLayer modules directly
+    # into `model`'s own submodule tree in place, then discards the
+    # PeftModel wrapper it returns. `model` stays a plain nn.Module even
+    # though it now contains live LoraLayer submodules, so the
+    # isinstance(model, PeftModel) check above is always False for that
+    # path and this function used to silently no-op — has_adapter/
+    # _lora_layers bookkeeping would reset, but the injected LoraLayer
+    # modules kept running in every subsequent forward pass. Detect and
+    # unwrap that case directly: replace each injected LoraLayer with its
+    # original frozen base layer (LoRA never modifies base-layer weights,
+    # so this exactly restores pre-adapter behavior).
+    count = 0
+    for parent in list(model.modules()):
+        for child_name, child in list(parent.named_children()):
+            if isinstance(child, _PeftLoraLayer):
+                setattr(parent, child_name, child.get_base_layer())
+                count += 1
+    return count
 
 
 def has_lora_adapter(model: nn.Module) -> bool:

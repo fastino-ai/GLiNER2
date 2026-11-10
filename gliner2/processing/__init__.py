@@ -15,6 +15,7 @@ _LAZY = {
     "LiteralTarget": ("gliner2.processing.targets", "LiteralTarget"),
     "RecordFieldTarget": ("gliner2.processing.targets", "RecordFieldTarget"),
     "RecordTarget": ("gliner2.processing.targets", "RecordTarget"),
+    "SurfaceSpan": ("gliner2.processing.surface", "SurfaceSpan"),
     "TargetGraph": ("gliner2.processing.targets", "TargetGraph"),
     "PaddedTargetBatch": ("gliner2.processing.targets", "PaddedTargetBatch"),
     "TargetCapacityError": ("gliner2.processing.targets", "TargetCapacityError"),

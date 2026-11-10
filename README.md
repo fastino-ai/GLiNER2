@@ -16,7 +16,7 @@ GLiNER2 is a **schema-conditioned** encoder family for **Named Entity Recognitio
 
 Load any Hub checkpoint with `AutoExtractor.from_pretrained(...)`. It dispatches by the saved `architecture` field. `GLiNER2.from_pretrained(...)` remains span-only and will **not** load GLiNER2.5 boundary checkpoints.
 
-Fine-tune via [Fastino](https://fastino.ai). Join discussions on [Discord](https://discord.gg/fastino) and [Reddit](https://www.reddit.com/r/GLiNER/).
+Fine-tune via [Fastino](https://agent.fastino.ai). Join discussions on [Discord](https://discord.gg/fastino) and [Reddit](https://www.reddit.com/r/GLiNER/).
 
 ## ✨ Why GLiNER2?
 
@@ -28,8 +28,11 @@ Fine-tune via [Fastino](https://fastino.ai). Join discussions on [Discord](https
 
 ## 🚀 Installation & Quick Start
 
-GLiNER2 requires Python 3.10 or newer. Choose the smallest install profile that
-matches your use case:
+GLiNER2 requires Python 3.10 or newer and is tested on Python 3.10 to 3.12. The
+`local`, `train`, and `benchmark` profiles install PyTorch, so they also need a
+Python version that PyTorch publishes wheels for. Local profiles support
+Transformers 4.43 through 5.x. Choose the smallest install profile that matches
+your use case:
 
 ```bash
 # Schema validation, API client, training-data utilities — no torch required
@@ -38,7 +41,11 @@ pip install gliner2
 # Local model inference and LoRA support
 pip install gliner2[local]
 
-# Model training and recipe configuration
+# Local inference with optimized DeBERTa-v2/v3 attention
+pip install "gliner2[disentangled-flash]"
+
+# Model training and recipe configuration (adds sentencepiece and protobuf,
+# needed to build models from raw encoders such as microsoft/deberta-v3-base)
 pip install gliner2[train]
 
 # Reproducible tests, contributor tooling, or benchmarks
@@ -60,7 +67,7 @@ The torch-free API client partitions batch requests locally and can scan long
 documents without changing the server protocol:
 
 ```python
-client = API()  # reads PIONEER_API_KEY
+client = API()  # reads FASTINO_API_KEY
 results = client.batch_extract_entities(
     documents,
     ["company", "person"],
@@ -173,6 +180,15 @@ All models are on the [GLiNER2 family collection](https://huggingface.co/collect
 
 Boundary checkpoints include classification, records, and relations when those heads are enabled. Prefer **`gliner2.5-base-v1`** for English and **`gliner2.5-multi-v1`** for multilingual.
 
+### Decide (text classification specialists)
+
+| Model | Parameters | Encoder | Architecture | Language | Use case |
+|-------|------------|---------|--------------|----------|----------|
+| [`fastino/GLiNER2.5-Decide`](https://huggingface.co/fastino/GLiNER2.5-Decide) | 340M | DeBERTa-v3-large | span | English | Intent, routing, sentiment, multi-label tags |
+| [`fastino/GLiNER2.5-multi-Decide`](https://huggingface.co/fastino/GLiNER2.5-multi-Decide) | 287M | mDeBERTa-v3-base | boundary | Multilingual | Same, multilingual |
+
+Decide checkpoints are tuned for classification: use `classify_text` / `batch_classify_text` (or `Classifier`). Both load with `AutoExtractor`; note that `GLiNER2.5-Decide` is a span checkpoint despite the 2.5 name, so `GLiNER2.from_pretrained` also loads it, while `GLiNER2.5-multi-Decide` is boundary-only. Local inference needs `pip install "gliner2[local]"`. Evaluated on [`fastino/fast-decisions`](https://huggingface.co/datasets/fastino/fast-decisions).
+
 ### Safety and PII (span fine-tunes)
 
 | Model | Parameters | Use case |
@@ -190,6 +206,8 @@ See [Safety, PII, and GLiGuard](tutorial/16-safety_pii.md) for usage. GLiGuard a
 | English IE (recommended) | `fastino/gliner2.5-base-v1` |
 | Multilingual IE | `fastino/gliner2.5-multi-v1` |
 | Small / fast English | `fastino/gliner2.5-small-v1` |
+| Text classification (English) | `fastino/GLiNER2.5-Decide` |
+| Text classification (multilingual) | `fastino/GLiNER2.5-multi-Decide` |
 | Legacy span | `fastino/gliner2-{base,large,multi}-v1` |
 | LLM guardrails | `fastino/gliguard-LLMGuardrails-300M` |
 | PII redaction | `fastino/gliner2-privacy-filter-PII-multi` |
@@ -1031,7 +1049,9 @@ results = model.extract(text, schema)
 # Output: {'user': [{'username': 'john_doe'}]}  # Only valid usernames
 ```
 
-## FlashDeBERTa (Optional GPU Acceleration)
+## DeBERTa Acceleration (Optional)
+
+### FlashDeBERTa
 
 For DeBERTaV2-based models, you can use [FlashDeBERTa](https://github.com/fastino-ai/flashdeberta) to accelerate inference on NVIDIA GPUs via flash attention kernels.
 
@@ -1061,14 +1081,11 @@ result = model.extract_entities(
 
 The option works for both span and boundary checkpoints. It is only effective when the model uses a DeBERTaV2 encoder and the `flashdeberta` package is installed; otherwise the standard Hugging Face encoder is used. For backward compatibility, setting `USE_FLASHDEBERTA=1` still enables it when `use_flashdeberta` is omitted. Passing `use_flashdeberta=False` explicitly overrides the environment variable.
 
-Use FP16 or BF16 on CUDA to realize the flash-kernel speedup. The benchmark compares both backends in separate processes, verifies that FlashDeBERTa actually activated, and reports latency, statistical significance, and peak memory:
+Use FP16 or BF16 on CUDA to realize the flash-kernel speedup. The full-stack benchmark compares the standard, FlashDeBERTa, and DisentangledFlash backends in separate processes, verifies that each requested backend activated, and reports latency, statistical significance, and peak memory:
 
 ```bash
 # End-to-end extraction (FP16 is the CUDA default)
 python benchmarks/benchmark_flashdeberta.py --dtype fp16 --architecture auto
-
-# Encoder-only comparison, excluding preprocessing and decoding
-python benchmarks/benchmark_flashdeberta.py --dtype fp16 --encoder-only
 
 # Boundary checkpoint (the model config must declare boundary architecture)
 python benchmarks/benchmark_flashdeberta.py \
@@ -1076,6 +1093,95 @@ python benchmarks/benchmark_flashdeberta.py \
   --architecture boundary \
   --dtype bf16
 ```
+
+### DisentangledFlash
+
+[DisentangledFlash](https://github.com/delyan-boychev/disentangled-flash)
+provides exact DeBERTa-v2/v3 disentangled attention without materializing the
+full attention matrix. It uses Triton on supported NVIDIA CUDA models and an
+optimized PyTorch backend elsewhere.
+
+Install the optional integration:
+
+```bash
+pip install "gliner2[disentangled-flash]"
+```
+
+Enable it through the standard model-loading options. Device placement and
+precision conversion happen before the attention backend is installed:
+
+```python
+from gliner2 import AutoExtractor
+
+model = AutoExtractor.from_pretrained(
+    "fastino/gliner2.5-base-v1",
+    map_location="cuda",
+    quantize=True,
+    attention_backend="disentangled_flash",
+)
+
+result = model.extract_entities(
+    "Apple CEO Tim Cook announced iPhone 15 in Cupertino.",
+    ["company", "person", "product", "location"],
+)
+```
+
+The loader integration is inference-oriented and opt-in. It preserves checkpoint
+parameter names and prepares the padded sequence lengths used by GLiNER2 lazily,
+so both span and boundary checkpoints can use the same option. Select
+`attention_backend="flashdeberta"` to use FlashDeBERTa instead, or
+`attention_backend="standard"` to force the Transformers implementation. The
+DisentangledFlash backend cannot be combined with `compile=True`. For advanced
+use, load and place
+the model yourself, call `eval()`, and then call
+`model.enable_disentangled_flash(backend="torch")` to force the optimized
+PyTorch implementation. Changing devices after enabling the backend is rejected
+to prevent a stale backend or prepared plan from being used.
+
+DisentangledFlash also provides a differentiable training path. Enable it after
+moving the model to its training device and before constructing the optimizer:
+
+```python
+import torch
+
+model = AutoExtractor.from_pretrained(
+    "fastino/gliner2.5-base-v1",
+    attention_backend="standard",
+    map_location="cuda",
+)
+model.train()
+model.enable_disentangled_flash(inference=False)
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
+```
+
+Batches that mix short and long inputs carry right padding. By default
+(`packed="auto"`), a batch runs through DisentangledFlash's packed (unpadded)
+layout, which skips padded tokens in attention and in the feed-forward layers,
+when at least 15% of it is padding and its attention work `B × L²` is at least
+2²¹ (for example 8 × 512 or 32 × 256). Below that the GPU is not saturated, so
+padding is nearly free and packing's overhead does not pay off. These defaults
+were measured on an H200; override them when loading:
+
+```python
+model = AutoExtractor.from_pretrained(
+    "fastino/gliner2.5-base-v1",
+    map_location="cuda",
+    attention_backend="disentangled_flash",
+    disentangled_flash_packed="auto",        # "auto", True, or False
+    disentangled_flash_min_padding=0.15,     # padding fraction required to pack
+    disentangled_flash_min_work=2**21,       # B * L**2 required to pack
+)
+```
+
+or with `model.enable_disentangled_flash(packed=..., packed_min_padding=...,
+packed_min_work=...)`. `benchmarks/benchmark_packed_threshold.py` measures both
+thresholds on your hardware.
+
+Kernel launch configs follow DisentangledFlash's default (a matching tuning
+profile, otherwise its heuristic); pass `disentangled_flash_tuning="heuristic"`
+(or `tuning=` on `enable_disentangled_flash`) to always use the heuristic.
+`benchmarks/benchmark_packed_threshold.py` measures the break-even padding on
+your hardware.
 
 ## 📦 Batch Processing
 
@@ -1125,6 +1231,8 @@ results = model.batch_extract_entities(
 
 Train GLiNER2 on your own data to specialize for your domain or use case.
 
+> **Hosted option:** if you'd rather not manage GPUs, the [Fastino API](https://agent.fastino.ai) can also fine-tune and serve GLiNER models, which is usually faster than training locally. See [Hosted Training](tutorial/9-training.md#hosted-training-fastino-api) for the endpoints. Everything below works fully offline without it.
+
 ### Quick Start Training
 
 ```python
@@ -1169,6 +1277,12 @@ GLiNER2 uses JSONL format where each line contains an `input` and `output` field
 ```jsonl
 {"input": "Tim Cook is the CEO of Apple Inc., based in Cupertino, California.", "output": {"entities": {"person": ["Tim Cook"], "company": ["Apple Inc."], "location": ["Cupertino", "California"]}, "entity_descriptions": {"person": "Full name of a person", "company": "Business organization name", "location": "Geographic location or place"}}}
 {"input": "OpenAI released GPT-4 in March 2023.", "output": {"entities": {"company": ["OpenAI"], "model": ["GPT-4"], "date": ["March 2023"]}}}
+```
+
+Or, by setting explicit spans:
+
+```jsonl
+{"input": "Pushkin street runs past the Pushkin monument.", "output": {"entities": {"street": [{"text": "Pushkin", "start": 0, "end": 7}]}}}
 ```
 
 **Classification Example:**

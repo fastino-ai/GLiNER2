@@ -19,7 +19,7 @@ Use GLiNER2 through a cloud API without loading models locally. Perfect for prod
 
 ### Get Your API Key
 
-1. Visit [gliner.pioneer.ai](https://gliner.pioneer.ai)
+1. Visit [agent.fastino.ai](https://agent.fastino.ai)
 2. Sign up or log in to your account
 3. Navigate to API Keys section
 4. Generate a new API key
@@ -34,7 +34,7 @@ pip install gliner2
 
 **Option 1: Environment Variable (Recommended)**
 ```bash
-export PIONEER_API_KEY="your-api-key-here"
+export FASTINO_API_KEY="your-api-key-here"
 ```
 
 **Option 2: Pass Directly**
@@ -47,7 +47,7 @@ extractor = GLiNER2.from_api(api_key="your-api-key-here")
 ```python
 from gliner2 import GLiNER2
 
-# Load from API (uses PIONEER_API_KEY environment variable)
+# Load from API (uses FASTINO_API_KEY environment variable)
 extractor = GLiNER2.from_api()
 
 # Use exactly like the local model!
@@ -434,7 +434,7 @@ try:
     results = extractor.extract_entities(text, entity_types)
     
 except AuthenticationError:
-    print("Invalid API key. Check your PIONEER_API_KEY.")
+    print("Invalid API key. Check your FASTINO_API_KEY.")
     
 except ValidationError as e:
     print(f"Invalid request: {e}")

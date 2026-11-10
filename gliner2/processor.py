@@ -6,15 +6,17 @@ via DataLoader collate functions for parallel preprocessing.
 """
 
 import copy
+import importlib.util
 import logging
 import random
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Dict, Tuple, List, Optional
+from typing import Any, Dict, Mapping, NamedTuple, Tuple, List, Optional
 import torch
 from transformers import AutoTokenizer
 
 from gliner2.classification.errors import SchemaError
+from gliner2.processing.targets import SurfaceSpan, char_span_to_word_boundaries
 from gliner2.processing.word_splitter import (  # noqa: F401 - public re-exports
     CharLevelSplitter,
     WhitespaceTokenSplitter,
@@ -26,10 +28,65 @@ logger = logging.getLogger(__name__)
 
 _TOKENIZE_CACHE_SIZE = 50_000
 
+_SENTENCEPIECE_CONVERSION_MODULES = (
+    ("sentencepiece", "sentencepiece"),
+    ("protobuf", "google.protobuf"),
+)
+
+
+def _module_available(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def _load_encoder_tokenizer(model_name: str):
+    """Load an encoder tokenizer, naming the missing SentencePiece dependencies.
+
+    Encoders that ship only ``spm.model`` (e.g. ``microsoft/deberta-v3-base``)
+    need ``sentencepiece`` and ``protobuf`` to build a fast tokenizer, and
+    Transformers reports their absence with misleading errors.
+    """
+    try:
+        return AutoTokenizer.from_pretrained(model_name)
+    except (AttributeError, ImportError, ValueError) as exc:
+        missing = [
+            package
+            for package, module in _SENTENCEPIECE_CONVERSION_MODULES
+            if not _module_available(module)
+        ]
+        if not missing:
+            raise
+        raise ImportError(
+            f"Loading the tokenizer for {model_name!r} failed; missing "
+            f"{', '.join(missing)}. Encoders that ship only a SentencePiece "
+            "vocabulary need both sentencepiece and protobuf; install them with "
+            "'pip install \"gliner2[train]\"'."
+        ) from exc
+
 
 # =============================================================================
 # Data Structures
 # =============================================================================
+
+
+class _GoldContext(NamedTuple):
+    text: str
+    text_tokens: List[str]
+    start_idx_map: List[int]
+    end_idx_map: List[int]
+    len_prefix: int
+    # character end of the last token max_len kept, None when nothing was cut
+    char_limit: Optional[int]
+
+
+def _parse_gold(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return SurfaceSpan.from_mapping(value)
+    if isinstance(value, list):
+        return [_parse_gold(v) for v in value]
+    return value
 
 
 @dataclass
@@ -313,7 +370,7 @@ class SchemaTransformer:
             raise ValueError("Either model_name or tokenizer must be provided.")
 
         self.token_pooling = token_pooling if token_pooling in ["first", "mean", "max"] else "first"
-        self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = tokenizer or _load_encoder_tokenizer(model_name)
         self.word_splitter = resolve_word_splitter(word_splitter)
         self.sampling_config = sampling_config or SamplingConfig()
         self.is_training = False
@@ -354,6 +411,7 @@ class SchemaTransformer:
         max_gold_per_query: int = 32,
         on_capacity_exceeded: str = "raise",
         ignore_missing_entities: bool = False,
+        dedupe_contained_entity_spans: bool = True,
     ) -> PreprocessedBatch:
         """
         Collate function for training DataLoader.
@@ -376,6 +434,13 @@ class SchemaTransformer:
                 (default, recommended for training) propagates the error;
                 ``"skip"`` omits the offending record; ``"fallback"`` inserts a
                 minimal dummy record (legacy compatibility behavior).
+            dedupe_contained_entity_spans: When ``True`` (default), filter an
+                entity query's independently re-searched listed-value matches
+                down to the maximal, non-contained spans before they become
+                gold mentions -- see
+                ``gliner2.processing.boundary_preprocessing._dedupe_contained_spans``.
+                Only affects ``architecture="boundary"``; only affects entity
+                queries. Set ``False`` to restore the pre-fix behavior.
 
         Returns:
             PreprocessedBatch ready for model.forward()
@@ -391,6 +456,7 @@ class SchemaTransformer:
             max_gold_per_query=max_gold_per_query,
             on_capacity_exceeded=on_capacity_exceeded,
             ignore_missing_entities=ignore_missing_entities,
+            dedupe_contained_entity_spans=dedupe_contained_entity_spans,
         )
 
     def collate_fn_inference(
@@ -404,6 +470,7 @@ class SchemaTransformer:
         max_gold_per_query: int = 32,
         on_capacity_exceeded: str = "raise",
         ignore_missing_entities: bool = False,
+        dedupe_contained_entity_spans: bool = True,
     ) -> PreprocessedBatch:
         """
         Collate function for inference DataLoader.
@@ -436,6 +503,7 @@ class SchemaTransformer:
             max_gold_per_query=max_gold_per_query,
             on_capacity_exceeded=on_capacity_exceeded,
             ignore_missing_entities=ignore_missing_entities,
+            dedupe_contained_entity_spans=dedupe_contained_entity_spans,
         )
 
     @staticmethod
@@ -448,6 +516,7 @@ class SchemaTransformer:
         build_targets: Optional[bool] = None,
         on_capacity_exceeded: str = "raise",
         ignore_missing_entities: bool = False,
+        dedupe_contained_entity_spans: bool = True,
     ) -> PreprocessedBatch:
         if architecture != "boundary" or len(batch) == 0:
             return batch
@@ -472,6 +541,9 @@ class SchemaTransformer:
             build_targets=build_targets,
             on_capacity_exceeded=on_capacity_exceeded,
             ignore_missing_entities=ignore_missing_entities,
+            dedupe_contained_entity_spans=dedupe_contained_entity_spans,
+            original_texts=batch.original_texts,
+            original_schemas=batch.original_schemas,
         )
         batch.query_layouts = layouts
         batch.targets = targets
@@ -637,10 +709,13 @@ class SchemaTransformer:
             start_idx_map.append(start)
             end_idx_map.append(end)
 
-        if max_len is not None:
+        char_limit = None
+        if max_len is not None and len(text_tokens) > max_len:
             text_tokens = text_tokens[:max_len]
             start_idx_map = start_idx_map[:max_len]
             end_idx_map = end_idx_map[:max_len]
+            # gold starting past the last retained token was cut, not misplaced
+            char_limit = end_idx_map[-1] if end_idx_map else 0
 
         if prefix:
             text_tokens = prefix + text_tokens
@@ -649,9 +724,15 @@ class SchemaTransformer:
         # Infer schema
         processed = self._infer_from_json(schema)
 
-        results = self._build_outputs(
-            processed, schema, text_tokens, len_prefix, build_targets=build_targets
+        ctx = _GoldContext(
+            text=text,
+            text_tokens=text_tokens,
+            start_idx_map=start_idx_map,
+            end_idx_map=end_idx_map,
+            len_prefix=len_prefix,
+            char_limit=char_limit,
         )
+        results = self._build_outputs(processed, schema, ctx, build_targets=build_targets)
 
         # Format input
         schema_tokens_list = [r["schema_tokens"] for r in results]
@@ -861,6 +942,12 @@ class SchemaTransformer:
         """Wrap classification field values with [selection] prefix."""
 
         def wrap(val):
+            values = val if isinstance(val, list) else [val]
+            if any(isinstance(v, Mapping) for v in values):
+                raise ValueError(
+                    "choice field values select from a label set and cannot be "
+                    "pinned to a span"
+                )
             if isinstance(val, list):
                 return [f"[selection]{v}" for v in val]
             return f"[selection]{val}"
@@ -987,7 +1074,7 @@ class SchemaTransformer:
             # Build spans
             spans = []
             for occ in occurrences:
-                span = [occ.get(f) for f in chosen]
+                span = [_parse_gold(occ.get(f)) for f in chosen]
                 spans.append(span)
 
             # Dedup
@@ -1055,7 +1142,7 @@ class SchemaTransformer:
         ]
 
         if chosen:
-            span = [schema["entities"][e] for e in chosen]
+            span = [_parse_gold(schema["entities"][e]) for e in chosen]
             labels.append([1, [span]])
 
             mode = (
@@ -1099,7 +1186,7 @@ class SchemaTransformer:
             spans = []
             for occ in occurrences:
                 if all(f in occ for f in field_names):
-                    spans.append([occ[f] for f in field_names])
+                    spans.append([_parse_gold(occ[f]) for f in field_names])
 
             if not spans:
                 continue
@@ -1246,8 +1333,7 @@ class SchemaTransformer:
         self,
         processed: Dict,
         schema: Dict,
-        text_tokens: List[str],
-        len_prefix: int,
+        ctx: _GoldContext,
         *,
         build_targets: Optional[bool] = False,
     ) -> List[Dict]:
@@ -1271,32 +1357,10 @@ class SchemaTransformer:
                         if isinstance(element, list):
                             nested = []
                             for sub in element:
-                                if str(sub).startswith("[selection]"):
-                                    # Use case-insensitive matching for choice fields
-                                    pos = self._find_sublist(
-                                        [str(sub)[11:]],
-                                        text_tokens[:len_prefix],
-                                        case_insensitive=True,
-                                    )
-                                else:
-                                    pos = self._find_sublist(
-                                        self._tokenize_text(str(sub)), text_tokens
-                                    )
-                                nested.extend(pos)
+                                nested.extend(self._resolve_gold(sub, ctx))
                             positions.append(nested)
                         else:
-                            if str(element).startswith("[selection]"):
-                                # Use case-insensitive matching for choice fields
-                                pos = self._find_sublist(
-                                    [str(element)[11:]],
-                                    text_tokens[:len_prefix],
-                                    case_insensitive=True,
-                                )
-                            else:
-                                pos = self._find_sublist(
-                                    self._tokenize_text(str(element)), text_tokens
-                                )
-                            positions.append(pos)
+                            positions.append(self._resolve_gold(element, ctx))
                     transformed.append(positions)
 
                 results.append(
@@ -1337,6 +1401,32 @@ class SchemaTransformer:
 
         return results
 
+    def _resolve_gold(self, value: Any, ctx: _GoldContext) -> List[Tuple[int, int]]:
+        if isinstance(value, SurfaceSpan):
+            return [self._resolve_span(value, ctx)]
+        text = str(value)
+        if text.startswith("[selection]"):
+            # Use case-insensitive matching for choice fields
+            return self._find_sublist(
+                [text[11:]], ctx.text_tokens[: ctx.len_prefix], case_insensitive=True
+            )
+        return self._find_sublist(self._tokenize_text(text), ctx.text_tokens)
+
+    def _resolve_span(self, value: SurfaceSpan, ctx: _GoldContext) -> Tuple[int, int]:
+        covered = ctx.text[value.start : value.end]
+        if covered != value.text:
+            raise ValueError(
+                f"gold span [{value.start}, {value.end}) covers {covered!r}, "
+                f"not {value.text!r}"
+            )
+        if ctx.char_limit is not None and value.start >= ctx.char_limit:
+            return (-1, -1)
+        token_start, token_end = char_span_to_word_boundaries(
+            value.start, value.end, ctx.start_idx_map, ctx.end_idx_map
+        )
+        # mirrors word_offsets on the decode side: maps are unprefixed, tokens are not
+        return token_start + ctx.len_prefix, token_end - 1 + ctx.len_prefix
+
     def _find_sublist(
         self, sub: List[str], lst: List[str], case_insensitive: bool = False
     ) -> List[Tuple[int, int]]:
@@ -1370,6 +1460,80 @@ class SchemaTransformer:
     def _tokenize_text(self, text: str) -> List[str]:
         """Tokenize text into words."""
         return [tok for tok, _, _ in self.word_splitter(text, lower=True)]
+
+    # =========================================================================
+    # Public API: Pre-flight Alignment Check
+    # =========================================================================
+
+    def find_unalignable_entities(
+        self, text: str, entities: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Check which listed entity values fail to token-align in ``text``.
+
+        Training requires each listed entity value to be found as an exact,
+        contiguous run of *tokens* (not merely a character substring) inside
+        the tokenized text -- ``self.word_splitter``'s hyphen/underscore
+        continuation rule (see ``WhitespaceTokenSplitter``) means a value can
+        be a real character substring of ``text`` yet still fail this check,
+        e.g. ``"ABS"`` inside ``"...LEDRemote-ABS-BES3-MY2023.png..."``: the
+        tokenizer merges that whole hyphen-joined run into one token, so a
+        standalone-token search for ``"abs"`` finds nothing there.
+
+        Call this on a single ``(text, schema)`` example *before* submitting
+        it to ``collate_fn_train``, to self-diagnose annotations that would
+        otherwise surface only as a batch-relative ``ValueError`` deep inside
+        collation. It reuses the exact tokenizer (``self.word_splitter``) and
+        sublist search (``self._find_sublist``) that ``collate_fn_train`` uses
+        to build gold targets, so it can never drift from actual training
+        behavior -- a value reported here as alignable is guaranteed to align
+        during training, and vice versa.
+
+        Args:
+            text: The example's raw text, exactly as it will be passed to
+                ``collate_fn_train``/``collate_fn_inference`` (trailing
+                sentence punctuation is normalized internally, matching what
+                collation does).
+            entities: The example's ``schema["entities"]`` mapping: entity
+                type name -> a single literal listed value (``str``), or a
+                list of literal listed values for that type.
+
+        Returns:
+            A list of dicts, one per listed value that fails to token-align,
+            each with keys ``"entity_type"``, ``"value"``, and
+            ``"value_index"`` (the value's position within that type's list,
+            or ``None`` when the type's value was a single ``str`` rather
+            than a list). An empty list means every listed value aligns.
+
+        Example:
+            >>> transformer = SchemaTransformer(model_name="...")
+            >>> transformer.find_unalignable_entities(
+            ...     "See IMG Bosch-eBike-LEDRemote-ABS-BES3-MY2023.png for wiring.",
+            ...     {"PartCode": "ABS"},
+            ... )
+            [{'entity_type': 'PartCode', 'value': 'ABS', 'value_index': None}]
+        """
+        text_tokens = self._tokenize_text(self._normalize_text(text))
+        unalignable: List[Dict[str, Any]] = []
+        for entity_type, raw_value in entities.items():
+            is_list = isinstance(raw_value, list)
+            values = raw_value if is_list else [raw_value]
+            for index, value in enumerate(values):
+                if value is None or str(value) == "":
+                    continue
+                if str(value).startswith("[selection]"):
+                    # Choice-field selections align against the classification
+                    # prefix tokens, not document text; out of scope here.
+                    continue
+                matches = self._find_sublist(self._tokenize_text(str(value)), text_tokens)
+                if matches == [(-1, -1)]:
+                    unalignable.append(
+                        {
+                            "entity_type": entity_type,
+                            "value": value,
+                            "value_index": index if is_list else None,
+                        }
+                    )
+        return unalignable
 
     # =========================================================================
     # Internal: Input Formatting

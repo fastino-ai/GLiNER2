@@ -32,14 +32,22 @@ HUB_LOAD_OPTIONS = frozenset(
 )
 MODEL_LOAD_OPTIONS = frozenset(
     {
+        "attention_backend",
         "quantize",
         "compile",
+        "disentangled_flash_min_padding",
+        "disentangled_flash_min_work",
+        "disentangled_flash_packed",
+        "disentangled_flash_tuning",
         "map_location",
         "use_flashdeberta",
         "word_splitter",
     }
 )
 LOAD_OPTIONS = HUB_LOAD_OPTIONS | MODEL_LOAD_OPTIONS
+ATTENTION_BACKENDS = frozenset(
+    {"standard", "flashdeberta", "disentangled_flash"}
+)
 
 
 def split_load_kwargs(
@@ -57,6 +65,59 @@ def split_load_kwargs(
     model_kwargs = {key: kwargs[key] for key in MODEL_LOAD_OPTIONS if key in kwargs}
     hub_kwargs = {key: kwargs[key] for key in HUB_LOAD_OPTIONS if key in kwargs}
     return model_kwargs, hub_kwargs
+
+
+def pop_attention_backend(
+    model_options: MutableMapping[str, Any],
+) -> Tuple[str | None, bool | None]:
+    """Resolve the unified backend option and legacy FlashDeBERTa alias."""
+    backend = model_options.pop("attention_backend", None)
+    legacy_flash = model_options.pop("use_flashdeberta", None)
+
+    if backend is not None:
+        backend = str(backend).strip().lower()
+        if backend not in ATTENTION_BACKENDS:
+            raise ValueError(
+                "attention_backend must be 'standard', 'flashdeberta', or "
+                f"'disentangled_flash', got {backend!r}"
+            )
+    if legacy_flash is not None and not isinstance(legacy_flash, bool):
+        raise TypeError(
+            "use_flashdeberta must be a bool or None, got "
+            f"{type(legacy_flash).__name__}"
+        )
+
+    if backend is None:
+        if legacy_flash is None:
+            return None, None
+        backend = "flashdeberta" if legacy_flash else "standard"
+    elif legacy_flash is not None:
+        legacy_backend = "flashdeberta" if legacy_flash else "standard"
+        if backend != legacy_backend:
+            raise ValueError(
+                "attention_backend conflicts with the legacy "
+                "use_flashdeberta option"
+            )
+
+    return backend, backend == "flashdeberta"
+
+
+def pop_disentangled_flash_options(
+    model_options: MutableMapping[str, Any],
+) -> Dict[str, Any]:
+    """Map ``disentangled_flash_*`` load options to enable kwargs."""
+    options = {}
+    if "disentangled_flash_packed" in model_options:
+        options["packed"] = model_options.pop("disentangled_flash_packed")
+    if "disentangled_flash_min_padding" in model_options:
+        options["packed_min_padding"] = model_options.pop(
+            "disentangled_flash_min_padding"
+        )
+    if "disentangled_flash_min_work" in model_options:
+        options["packed_min_work"] = model_options.pop("disentangled_flash_min_work")
+    if "disentangled_flash_tuning" in model_options:
+        options["tuning"] = model_options.pop("disentangled_flash_tuning")
+    return options
 
 
 def checkpoint_file(
@@ -172,17 +233,36 @@ def apply_post_load_options(
     quantize: bool = False,
     compile_model: bool = False,
     compile_dynamic: bool | None = None,
+    attention_backend: str | None = None,
+    disentangled_flash_options: Mapping[str, Any] | None = None,
 ) -> Any:
-    """Apply device, precision, then compilation in a deterministic order."""
+    """Apply device, precision, attention, then compilation options."""
     if not isinstance(quantize, bool):
         raise TypeError(f"quantize must be a bool, got {type(quantize).__name__}")
     if not isinstance(compile_model, bool):
         raise TypeError(f"compile must be a bool, got {type(compile_model).__name__}")
+    if attention_backend is not None and attention_backend not in ATTENTION_BACKENDS:
+        raise ValueError(f"unknown attention backend {attention_backend!r}")
+    if attention_backend == "disentangled_flash" and compile_model:
+        raise ValueError(
+            "attention_backend='disentangled_flash' and compile=True cannot "
+            "be enabled together; "
+            "DisentangledFlash manages its own prepared attention path."
+        )
+    if disentangled_flash_options and attention_backend != "disentangled_flash":
+        raise ValueError(
+            "disentangled_flash_packed, disentangled_flash_min_padding, "
+            "disentangled_flash_min_work and disentangled_flash_tuning "
+            "require attention_backend='disentangled_flash'."
+        )
 
     if map_location is not None:
         model = model.to(map_location)
     if quantize:
         model.quantize()
+    if attention_backend == "disentangled_flash":
+        model.eval()
+        model.enable_disentangled_flash(**(disentangled_flash_options or {}))
     if compile_model:
         if compile_dynamic is None:
             model.compile()

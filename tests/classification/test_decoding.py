@@ -4,12 +4,14 @@ infeasibility ladder in order. No torch.
 """
 from __future__ import annotations
 
+import random
 from types import SimpleNamespace
 
 import pytest
 
 from gliner2.classification import constraints as C
 from gliner2.classification.compiler import compile_schema
+from gliner2.classification.constraints import DictAssignment
 from gliner2.classification.decoding import (
     BeamDecoder,
     ExactDecoder,
@@ -77,6 +79,81 @@ def test_exact_matches_independent_when_unbound():
     indep = IndependentDecoder().decode(problem)
     assert exact.assignments["intent"].labels == indep.assignments["intent"].labels
     assert exact.assignments["effects"].labels == indep.assignments["effects"].labels
+
+
+# ---- T-D4b : a satisfied constraint never changes the answer -----------
+#
+# Retention runs at the engine default (candidate_threshold=0.5), where the
+# argmax of an exclusive task can sit below the floor. A label a constraint
+# rescues must not stand in for the labels the unconstrained decode keeps.
+
+_INTENT = ["read", "write", "delete"]
+_EFFECTS = ["read_only", "create", "modify", "delete"]
+# "DROP TABLE customers;" on gliner2-base-v1: no intent label clears 0.5.
+_DROP_TABLE = {"intent": {"read": -1.921, "write": -0.039, "delete": -3.941},
+               "effects": {"read_only": -3.252, "create": -0.286,
+                           "modify": -0.252, "delete": -2.910}}
+
+
+def _intent_effects(*constraints):
+    return compile_schema(ClassificationSchema()
+                          .single("intent", _INTENT)
+                          .multi("effects", _EFFECTS)
+                          .constrain(*constraints))
+
+
+def _labels(sol):
+    return {t: la.labels for t, la in sol.assignments.items()}
+
+
+def _decode_at_default_retention(compiled, tasks, decoder):
+    cfg = _cfg(decoder=decoder, candidate_threshold=0.5, on_infeasible="raise")
+    return decode(_problem(compiled, tasks, cfg), cfg)
+
+
+def test_vacuous_implies_keeps_the_unconstrained_optimum():
+    free = _decode_at_default_retention(_intent_effects(), _DROP_TABLE, "auto")
+    compiled = _intent_effects(C.implies(("intent", "delete"), ("effects", "delete")))
+    bound = _decode_at_default_retention(compiled, _DROP_TABLE, "exact")
+    assert _labels(free) == {"intent": frozenset({"write"}), "effects": frozenset()}
+    assert _labels(bound) == _labels(free)
+    assert bound.score == pytest.approx(free.score)
+    assert bound.exact and bound.feasible
+
+
+@pytest.mark.parametrize("constraint", [
+    C.implies(("intent", "delete"), ("effects", "delete")),   # effects is consequent
+    C.implies(("effects", "delete"), ("intent", "delete")),   # effects is antecedent
+])
+def test_implies_allows_an_empty_multi_label_set(constraint):
+    # every label below the floor; the argmax (write) is still the answer
+    tasks = {"intent": {"read": -2.0, "write": -0.2, "delete": -3.0},
+             "effects": dict.fromkeys(_EFFECTS, -2.5)}
+    sol = _decode_at_default_retention(_intent_effects(constraint), tasks, "exact")
+    assert _labels(sol) == {"intent": frozenset({"write"}), "effects": frozenset()}
+
+
+def test_satisfied_implies_never_changes_the_answer_over_random_scores():
+    rng = random.Random(7622)
+    checked = 0
+    for _ in range(300):
+        tasks = {"intent": {name: rng.uniform(-4.0, 1.5) for name in _INTENT},
+                 "effects": {name: rng.uniform(-4.0, 3.0) for name in _EFFECTS}}
+        if rng.random() < 0.5:
+            cond, then = ("intent", rng.choice(_INTENT)), ("effects", rng.choice(_EFFECTS))
+        else:
+            cond, then = ("effects", rng.choice(_EFFECTS)), ("intent", rng.choice(_INTENT))
+        constraint = C.implies(cond, then)
+        free = _decode_at_default_retention(_intent_effects(), tasks, "auto")
+        compiled = _intent_effects(constraint)
+        a = DictAssignment(compiled, _labels(free), decided=compiled.task_order)
+        if not constraint.satisfied(a):
+            continue
+        bound = _decode_at_default_retention(compiled, tasks, "exact")
+        assert _labels(bound) == _labels(free), (constraint, tasks)
+        assert bound.score == pytest.approx(free.score)
+        checked += 1
+    assert checked > 150
 
 
 # ---- T-D9 : auto decoder selection -------------------------------------

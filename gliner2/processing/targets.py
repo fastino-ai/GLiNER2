@@ -14,6 +14,8 @@ from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 import torch
 
+from gliner2.processing.surface import SurfaceSpan  # noqa: F401 - public compatibility export
+
 logger = logging.getLogger(__name__)
 
 # Valid values for the gold-capacity overflow policy.
@@ -194,6 +196,7 @@ def word_boundaries_to_char_span(
 # =============================================================================
 # Surface occurrence resolution
 # =============================================================================
+
 
 def normalize_surface_occurrences(
     matches: Sequence[Tuple[int, int]],

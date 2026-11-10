@@ -165,13 +165,14 @@ class TrainingConfig:
     debug_global_steps: List[int] = field(default_factory=list)
     ddp_consensus_check: bool = True
     ddp_find_unused_parameters: bool = False
-    ddp_static_graph: bool = True
+    ddp_static_graph: bool = False
     dry_run_recall_steps: int = 0
     gate_recall: float = 0.97
     gate_long_recall: float = 0.93
     # Gold-capacity overflow policy for boundary targets: "raise" (default,
     # no silent loss), "truncate_with_warning", or "skip_sample".
     on_capacity_exceeded: str = "raise"
+    dedupe_contained_entity_spans: bool = True
     group_by_length: bool = True
     length_group_window_batches: int = 50
     compile_model: bool = False

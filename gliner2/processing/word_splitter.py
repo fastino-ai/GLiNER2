@@ -11,10 +11,18 @@ Unicode case folding can change length and corrupt offsets.
 from __future__ import annotations
 
 import re
+import sys
+import unicodedata
 from typing import Any, Callable, Iterator, Optional, Tuple, Union
 
 WordSplitter = Callable[[str, bool], Iterator[Tuple[str, int, int]]]
 WordSplitterSpec = Union[str, WordSplitter, type]
+
+
+_COMBINING_MARKS = "".join(
+    chr(code) for code in range(sys.maxunicode + 1) if unicodedata.category(chr(code)).startswith("M")
+)
+_WORD = rf"[\w{_COMBINING_MARKS}\u200c\u200d]"
 
 
 class WhitespaceTokenSplitter:
@@ -23,10 +31,10 @@ class WhitespaceTokenSplitter:
     __slots__ = ()
 
     _PATTERN = re.compile(
-        r"""(?:https?://[^\s]+|www\.[^\s]+)
-        |[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}
+        rf"""(?:https?://[^\s]+|www\.[^\s]+)
+        |[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{{2,}}
         |@[a-z0-9_]+
-        |\w+(?:[-_]\w+)*
+        |{_WORD}+(?:[-_]{_WORD}+)*
         |\S""",
         re.VERBOSE | re.IGNORECASE,
     )

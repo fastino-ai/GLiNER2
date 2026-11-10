@@ -156,6 +156,54 @@ def test_shared_records_use_fully_batched_training_path(monkeypatch):
     )
 
 
+def test_shared_records_use_batched_inference_path(monkeypatch):
+    from gliner2.models.boundary import engine as boundary_engine
+
+    model = _build_tiny_records_model(candidate_pool="shared")
+    schema = model.create_schema()
+    (
+        schema.structure("purchase", mode="natural", anchor="buyer")
+        .field("buyer", dtype="str")
+        .field("item", dtype="str")
+    )
+    calls = 0
+    decoded_groups = 0
+    original_forward = model.record_decoder.forward_groups_dense
+    original_decode = boundary_engine.packed_record_group_to_ragged
+
+    def capture_forward(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_forward(*args, **kwargs)
+
+    def capture_decode(*args, **kwargs):
+        nonlocal decoded_groups
+        decoded_groups += 1
+        return original_decode(*args, **kwargs)
+
+    monkeypatch.setattr(
+        model.record_decoder, "forward_groups_dense", capture_forward
+    )
+    monkeypatch.setattr(
+        boundary_engine, "packed_record_group_to_ragged", capture_decode
+    )
+    monkeypatch.setattr(
+        model.record_decoder,
+        "forward_group",
+        lambda *args, **kwargs: pytest.fail("per-sample record path was used"),
+    )
+
+    results = model.batch_extract(
+        ["Alice bought apples", "Bob bought oranges"],
+        schema,
+        batch_size=2,
+    )
+
+    assert len(results) == 2
+    assert calls == 1
+    assert decoded_groups == 2
+
+
 def test_engine_decode_records_emits_public_structure_shape():
     from types import SimpleNamespace
 
@@ -192,6 +240,13 @@ def test_engine_decode_records_emits_public_structure_shape():
     assert len(instances) == 2
     buyers = {inst["buyer"] for inst in instances}
     assert buyers == {"Alice", "Bob"}
+
+    scored = model._decode_records(
+        batch, 0, core, cands, offset=0, start_map=start_map, end_map=end_map,
+        text=text, text_len=len(tokens), include_confidence=True, include_spans=False,
+    )
+    assert all("confidence" not in inst for inst in instances)
+    assert all(0.0 <= inst["confidence"] <= 1.0 for inst in scored["purchase"])
 
 
 def test_engine_choice_field_uses_per_record_assignment_not_global_fallback(

@@ -13,6 +13,8 @@ import importlib.util
 import logging
 import os
 import warnings
+from dataclasses import dataclass
+from typing import Any, Optional, Tuple
 from dataclasses import dataclass, field
 from typing import Optional, Sequence, Tuple
 
@@ -187,6 +189,388 @@ class BaseExtractorModel(PreTrainedModel):
     """
     config_class = ExtractorConfig
 
+    # packed="auto" thresholds, measured on an H200 with
+    # benchmarks/benchmark_packed_threshold.py.
+    DISENTANGLED_FLASH_PACKED_MIN_PADDING = 0.15
+    DISENTANGLED_FLASH_PACKED_MIN_WORK = 2**21  # B * L**2
+
+    @staticmethod
+    def _disentangled_flash_backend_for_device(device: torch.device) -> str:
+        """Select Triton on NVIDIA CUDA and PyTorch everywhere else."""
+        if device.type == "cuda" and torch.version.hip is None:
+            return "triton"
+        if device.type in {"cpu", "mps", "cuda"}:
+            return "torch"
+        raise RuntimeError(
+            "DisentangledFlash supports NVIDIA CUDA through Triton and "
+            "CPU, MPS, and AMD ROCm through its PyTorch backend; got "
+            f"device {device}."
+        )
+
+    @staticmethod
+    def _disentangled_flash_packing_layout(
+        attention_mask: Optional[torch.Tensor],
+        packed: bool | str,
+        min_padding: float,
+        min_work: int = 0,
+    ) -> Optional[Tuple[torch.Tensor, Tuple[int, ...]]]:
+        """Return ``(mask, lengths)`` to run the batch packed, else ``None``."""
+        forced = packed is True
+
+        def reject(reason: str) -> None:
+            if forced:
+                raise ValueError(f"DisentangledFlash packed mode: {reason}")
+            return None
+
+        if attention_mask is None or attention_mask.ndim != 2:
+            return reject("requires a [B, L] attention_mask")
+        batch_size, sequence_length = attention_mask.shape
+        if batch_size == 0 or sequence_length == 0:
+            return reject("requires a non-empty batch")
+        if not forced and batch_size * sequence_length**2 < min_work:
+            return None
+
+        mask = attention_mask.bool()
+        lengths_tensor = mask.sum(dim=1)
+        lengths = tuple(int(length) for length in lengths_tensor.tolist())
+        if min(lengths) <= 0:
+            return reject("empty sequences are unsupported")
+        padding = 1.0 - sum(lengths) / (batch_size * sequence_length)
+        if not forced and padding < min_padding:
+            return None
+
+        positions = torch.arange(sequence_length, device=mask.device)
+        if not torch.equal(mask, positions[None, :] < lengths_tensor[:, None]):
+            return reject("only right-padded batches can be packed")
+        return mask, lengths
+
+    def enable_disentangled_flash(
+        self,
+        *,
+        backend: str = "auto",
+        inference: bool | None = None,
+        packed: bool | str = "auto",
+        packed_min_padding: float | None = None,
+        packed_min_work: int | None = None,
+        tuning: Any = None,
+    ) -> "BaseExtractorModel":
+        """Enable DisentangledFlash for DeBERTa-v2/v3 attention.
+
+        Move the model to its final device and dtype first. For training, call
+        it after :meth:`train` and before building the optimizer. Packed
+        batches return zeros at padded positions.
+
+        Args:
+            backend: ``"auto"``, ``"triton"`` or ``"torch"``. ``"auto"`` uses
+                Triton on NVIDIA CUDA and PyTorch elsewhere.
+            inference: Defaults to ``not self.training``.
+            packed: ``"auto"`` packs when both thresholds below are met,
+                ``True`` always packs, ``False`` never does.
+            packed_min_padding: Minimum padded fraction of ``B * L``.
+            packed_min_work: Minimum ``B * L**2``.
+            tuning: Kernel tuning mode name or ``KernelTuningOptions``;
+                ``None`` keeps the DisentangledFlash default.
+        """
+        if packed not in (True, False, "auto"):
+            raise ValueError("packed must be True, False, or 'auto'")
+        if packed_min_padding is None:
+            packed_min_padding = (
+                BaseExtractorModel.DISENTANGLED_FLASH_PACKED_MIN_PADDING
+            )
+        if isinstance(packed_min_padding, bool) or not isinstance(
+            packed_min_padding, (int, float)
+        ):
+            raise TypeError("packed_min_padding must be a number")
+        packed_min_padding = float(packed_min_padding)
+        if not 0.0 <= packed_min_padding <= 1.0:
+            raise ValueError("packed_min_padding must be between 0 and 1")
+        if packed_min_work is None:
+            packed_min_work = BaseExtractorModel.DISENTANGLED_FLASH_PACKED_MIN_WORK
+        if isinstance(packed_min_work, bool) or not isinstance(packed_min_work, int):
+            raise TypeError("packed_min_work must be an int")
+        if packed_min_work < 0:
+            raise ValueError("packed_min_work must be non-negative")
+        if inference is None:
+            inference = not self.training
+        if not isinstance(inference, bool):
+            raise TypeError(
+                f"inference must be a bool or None, got {type(inference).__name__}"
+            )
+        if inference and self.training:
+            raise RuntimeError(
+                "DisentangledFlash inference requires eval mode; call "
+                "model.eval() before enable_disentangled_flash()."
+            )
+        if not inference and not self.training:
+            raise RuntimeError(
+                "DisentangledFlash training requires training mode; call "
+                "model.train() before enable_disentangled_flash(inference=False)."
+            )
+        if backend not in {"auto", "torch", "triton"}:
+            raise ValueError("backend must be 'auto', 'torch', or 'triton'")
+
+        encoder_config = getattr(self.encoder, "config", None)
+        if (
+            encoder_config is None
+            or encoder_config.__class__.__name__ != "DebertaV2Config"
+        ):
+            raise TypeError(
+                "DisentangledFlash supports Hugging Face DeBERTa-v2/v3 "
+                "backbones only."
+            )
+
+        try:
+            from disentangled_flash import (
+                DebertaV2OptimizedEncoder,
+                KernelTuningOptions,
+                optimize_deberta,
+            )
+        except ImportError as error:
+            raise ImportError(
+                "DisentangledFlash is optional; install it with "
+                "'pip install gliner2[disentangled-flash]'."
+            ) from error
+
+        if isinstance(tuning, str):
+            tuning = KernelTuningOptions(mode=tuning)
+        elif tuning is not None and not isinstance(tuning, KernelTuningOptions):
+            raise TypeError(
+                "tuning must be None, a mode name, or KernelTuningOptions"
+            )
+
+        existing_mode = getattr(self, "_disentangled_flash_mode", None)
+        requested_mode = "inference" if inference else "training"
+        if existing_mode == requested_mode:
+            return self
+        if existing_mode is not None:
+            raise RuntimeError(
+                "DisentangledFlash is already enabled in "
+                f"{existing_mode} mode; create a fresh model to use "
+                f"{requested_mode} mode."
+            )
+
+        if isinstance(
+            getattr(self.encoder, "encoder", None),
+            DebertaV2OptimizedEncoder,
+        ):
+            raise RuntimeError(
+                "The DeBERTa encoder is already optimized outside GLiNER2; "
+                "refusing to install a second lifecycle hook."
+            )
+
+        parameter = next(self.encoder.parameters())
+        if parameter.dtype not in {
+            torch.float16,
+            torch.bfloat16,
+            torch.float32,
+        }:
+            raise TypeError(
+                "DisentangledFlash supports FP16, BF16, and FP32; encoder "
+                f"dtype is {parameter.dtype}."
+            )
+        enabled_device = parameter.device
+        selected_backend = (
+            BaseExtractorModel._disentangled_flash_backend_for_device(
+                enabled_device
+            )
+            if backend == "auto"
+            else backend
+        )
+
+        optimize_deberta(
+            self.encoder,
+            backend=selected_backend,
+            inference=inference,
+            sequence_lengths=None,
+            fp32_precision="strict",
+            tuning=tuning,
+        )
+        optimized_encoder = self.encoder.encoder
+        if not isinstance(optimized_encoder, DebertaV2OptimizedEncoder):
+            raise RuntimeError(
+                "DisentangledFlash did not install its optimized DeBERTa "
+                "encoder."
+            )
+
+        self._disentangled_flash_backend = optimized_encoder.backend
+        self._disentangled_flash_mode = requested_mode
+        self._disentangled_flash_packed = packed
+        self._disentangled_flash_packed_min_padding = packed_min_padding
+        self._disentangled_flash_packed_min_work = packed_min_work
+        self._disentangled_flash_batches = {"packed": 0, "padded": 0}
+
+        # Set by the backbone pre-hook, consumed by the encoder forward.
+        pending: dict = {}
+
+        def select_layout(module, args, kwargs) -> bool:
+            pending.clear()
+            if packed is False or kwargs.get("output_attentions"):
+                self._disentangled_flash_batches["padded"] += 1
+                return False
+            if inference and torch.is_grad_enabled():
+                if packed is True:
+                    raise RuntimeError(
+                        "DisentangledFlash packed inference requires "
+                        "torch.no_grad() or torch.inference_mode()."
+                    )
+                self._disentangled_flash_batches["padded"] += 1
+                return False
+            attention_mask = kwargs.get("attention_mask")
+            if attention_mask is None and len(args) > 1:
+                attention_mask = args[1]
+            layout = BaseExtractorModel._disentangled_flash_packing_layout(
+                attention_mask, packed, packed_min_padding, packed_min_work
+            )
+            if layout is None:
+                self._disentangled_flash_batches["padded"] += 1
+                return False
+            output_hidden_states = kwargs.get("output_hidden_states")
+            if output_hidden_states is None:
+                output_hidden_states = module.config.output_hidden_states
+            pending["layout"] = layout
+            pending["all_hidden_states"] = bool(output_hidden_states)
+            self._disentangled_flash_batches["packed"] += 1
+            return True
+
+        if packed is not False:
+            from disentangled_flash import PackedSequenceInfo
+            from transformers.modeling_outputs import BaseModelOutput
+
+            padded_forward = optimized_encoder.forward
+
+            def forward(hidden_states, attention_mask, *args, **kwargs):
+                layout = pending.pop("layout", None)
+                if layout is None:
+                    return padded_forward(
+                        hidden_states, attention_mask, *args, **kwargs
+                    )
+                mask, lengths = layout
+                if mask.shape != hidden_states.shape[:2]:
+                    raise RuntimeError(
+                        "DisentangledFlash packed layout does not match the "
+                        "encoder input."
+                    )
+                offsets = [0]
+                for length in lengths:
+                    offsets.append(offsets[-1] + length)
+                info = PackedSequenceInfo(tuple(offsets), lengths, max(lengths))
+                cu_seqlens = torch.tensor(
+                    offsets, dtype=torch.int32, device=hidden_states.device
+                )
+                outputs = optimized_encoder.forward_packed(
+                    hidden_states[mask],
+                    cu_seqlens,
+                    info.max_seqlen,
+                    output_hidden_states=pending.pop("all_hidden_states"),
+                    return_dict=True,
+                    packed_info=info,
+                )
+
+                def unpack(states: torch.Tensor) -> torch.Tensor:
+                    padded = states.new_zeros(
+                        (*mask.shape, *states.shape[1:])
+                    )
+                    padded[mask] = states
+                    return padded
+
+                last_hidden_state = unpack(outputs.last_hidden_state)
+                if outputs.hidden_states is None:
+                    # DebertaV2Model reads encoder_outputs[1][-1].
+                    all_hidden_states = (last_hidden_state,)
+                else:
+                    all_hidden_states = tuple(
+                        unpack(states) for states in outputs.hidden_states[:-1]
+                    ) + (last_hidden_state,)
+                if not kwargs.get("return_dict", True):
+                    return (last_hidden_state, all_hidden_states)
+                return BaseModelOutput(
+                    last_hidden_state=last_hidden_state,
+                    hidden_states=all_hidden_states,
+                    attentions=None,
+                )
+
+            optimized_encoder.forward = forward
+
+        if not inference:
+            if packed is not False:
+                def select_training_layout(module, args, kwargs):
+                    select_layout(module, args, kwargs)
+
+                self._disentangled_flash_hook_handle = (
+                    self.encoder.register_forward_pre_hook(
+                        select_training_layout,
+                        with_kwargs=True,
+                    )
+                )
+            logger.info(
+                "Enabled DisentangledFlash training backend %s (packed=%s)",
+                optimized_encoder.backend,
+                packed,
+            )
+            return self
+
+        def prepare_active_length(module, args, kwargs):
+            if self.training or module.training:
+                raise RuntimeError(
+                    "DisentangledFlash inference cannot run in training mode."
+                )
+            if getattr(module, "encoder", None) is not optimized_encoder:
+                raise RuntimeError(
+                    "The DisentangledFlash encoder replacement is no longer "
+                    "active."
+                )
+
+            current_parameter = next(module.parameters())
+            if current_parameter.device != enabled_device:
+                raise RuntimeError(
+                    "The model device changed after DisentangledFlash was "
+                    "enabled. Move the model to its final device first, then "
+                    "enable the backend."
+                )
+            if current_parameter.dtype not in {
+                torch.float16,
+                torch.bfloat16,
+                torch.float32,
+            }:
+                raise TypeError(
+                    "DisentangledFlash supports FP16, BF16, and FP32; encoder "
+                    f"dtype is {current_parameter.dtype}."
+                )
+
+            input_ids = kwargs.get("input_ids")
+            if input_ids is None and args:
+                input_ids = args[0]
+            if input_ids is None or input_ids.ndim != 2:
+                raise ValueError(
+                    "DisentangledFlash requires input_ids with shape [B, L] "
+                    "to select a prepared sequence-length plan."
+                )
+
+            if select_layout(module, args, kwargs):
+                return
+
+            sequence_length = int(input_ids.shape[1])
+            prepared_lengths = tuple(
+                sorted(int(length) for length in optimized_encoder._prepared_plans)
+            )
+            if sequence_length not in prepared_lengths:
+                optimized_encoder.prepare_for_inference(
+                    tuple(sorted(set(prepared_lengths) | {sequence_length}))
+                )
+            optimized_encoder.activate_shape(sequence_length)
+
+        self._disentangled_flash_hook_handle = (
+            self.encoder.register_forward_pre_hook(
+                prepare_active_length,
+                with_kwargs=True,
+            )
+        )
+        logger.info(
+            "Enabled DisentangledFlash inference backend %s",
+            optimized_encoder.backend,
+        )
+        return self
+
     @staticmethod
     def _load_encoder(
         model_name: str,
@@ -230,10 +614,20 @@ class BaseExtractorModel(PreTrainedModel):
             kwargs = {"trust_remote_code": True}
             if implementation:
                 kwargs["attn_implementation"] = implementation
-            if encoder_config is not None:
-                encoder = AutoModel.from_config(config, **kwargs)
-            else:
-                encoder = AutoModel.from_pretrained(model_name, **kwargs)
+            with warnings.catch_warnings():
+                # Transformers' DeBERTa module decorates helpers with
+                # ``torch.jit.script`` at import time, which PyTorch flags as
+                # unsupported on Python 3.14+. The helpers still run eagerly,
+                # so the warning is not actionable for GLiNER2 users.
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"`torch\.jit\.script` is not supported",
+                    category=FutureWarning,
+                )
+                if encoder_config is not None:
+                    encoder = AutoModel.from_config(config, **kwargs)
+                else:
+                    encoder = AutoModel.from_pretrained(model_name, **kwargs)
             # Transformers 5 honors a serialized encoder dtype during
             # ``from_config``. GLiNER2 task heads are initialized in FP32, so a
             # half-precision encoder would emit activations that cannot enter
@@ -247,12 +641,17 @@ class BaseExtractorModel(PreTrainedModel):
         except (TypeError, ValueError, ImportError) as error:
             if not attn_implementation or attn_implementation == "eager":
                 raise
-            warnings.warn(
+            message = (
                 f"Encoder rejected attn_implementation={attn_implementation!r}; "
-                f"falling back to 'eager' ({error})",
-                RuntimeWarning,
-                stacklevel=2,
+                f"falling back to 'eager' ({error})"
             )
+            # SDPA is the default speed preference and many encoders (e.g.
+            # DeBERTa-v2/v3) lack it; eager attention is numerically equivalent,
+            # so only an explicit flash_attention_2 request warrants a warning.
+            if attn_implementation == "sdpa":
+                logger.debug(message)
+            else:
+                warnings.warn(message, RuntimeWarning, stacklevel=2)
             return load("eager")
 
     def encode_tokens(

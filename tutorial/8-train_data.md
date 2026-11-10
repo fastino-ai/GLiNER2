@@ -50,7 +50,7 @@ Entities use a simple dictionary where keys are entity types and values are list
 | Component | Type | Required | Description |
 |-----------|------|----------|-------------|
 | Entity type (key) | `str` | Yes | Name of the entity type (e.g., "person", "location") |
-| Entity mentions (value) | `list[str]` | Yes | List of entity text spans found in input |
+| Entity mentions (value) | `list[str]` or `list[dict]` | Yes | List of entity text spans found in input, each a surface string or an explicit span |
 
 **Format**: `{"entity_type": ["mention1", "mention2", ...]}`
 
@@ -62,7 +62,7 @@ Each structure is a dictionary with a parent name as key and field definitions a
 |-----------|------|----------|-------------|
 | Parent name (key) | `str` | Yes | Name of the structure (e.g., "product", "contact") |
 | Fields (value) | `dict` | Yes | Field name → field value mappings |
-| Field value | `str` or `list[str]` or `dict` | Yes | String, list of strings, or choice dict |
+| Field value | `str` or `list[str]` or `dict` | Yes | String, list of strings, explicit span, or choice dict |
 | Choice dict | `dict` with `value` and `choices` | No | For classification-style fields |
 
 **Format**: `[{"parent": {"field1": "value", "field2": ["list", "values"]}}]`
@@ -80,7 +80,7 @@ Relations use flexible field structures - you can use ANY field names (not just 
 |-----------|------|----------|-------------|
 | Relation name (key) | `str` | Yes | Name of the relation type (e.g., "works_for") |
 | Fields (value) | `dict` | Yes | Field name → field value mappings |
-| Field value | `str` or `list[str]` | Yes | String or list of strings |
+| Field value | `str` or `list[str]` or `dict` | Yes | String, list of strings, or explicit span |
 
 **Standard Format**: `[{"relation_name": {"head": "entity1", "tail": "entity2"}}]`
 
@@ -105,6 +105,20 @@ The training data loader supports multiple input formats:
 3. **Dict lists**: List of dictionaries in the same format as JSONL
 
 All formats are automatically detected and converted to the internal format. See `gliner2.training.data.DataLoader_Factory` for details.
+
+### Explicit Spans
+
+Entity mentions, structure field values and relation field values are normally surface strings, which supervise **every** occurrence of that text. To supervise one specific occurrence, give a span instead:
+
+```jsonl
+{"input": "Pushkin street runs past the Pushkin monument.", "output": {"entities": {"street": [{"text": "Pushkin", "start": 0, "end": 7}]}}}
+```
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `text` | `str` | Yes | The mention text, verified against the offsets |
+| `start` | `int` | Yes | Character offset into the input |
+| `end` | `int` | Yes | Character offset, exclusive |
 
 ---
 
@@ -200,10 +214,18 @@ Both formats are supported - use list for consistency or string for brevity:
 {"input": "Alice, Bob, and Charlie attended the meeting with David.", "output": {"entities": {"person": ["Alice", "Bob", "Charlie", "David"]}}}
 ```
 
-### NER with Empty Entity Types
+### NER with Empty Entity Types (Negative Examples)
+
+A type mapped to an empty list is a negative: the model is trained that this text contains no mention of that type. This is how to add realistic negatives and near-match negatives. A negative row must still declare the types it is negative for.
 
 ```jsonl
 {"input": "The conference will be held next week.", "output": {"entities": {"person": [], "organization": [], "location": []}}}
+```
+
+Every type in `entity_descriptions` is part of the row's label set, so a described type with no mentions is treated the same way. Supplying the same descriptions on every row therefore declares the full label set, and rows without mentions become negatives for it:
+
+```jsonl
+{"input": "I meant the vertex pulse in the graph editor, not a product.", "output": {"entities": {}, "entity_descriptions": {"product": "Vendor software product names", "version": "Software version identifiers"}}}
 ```
 
 ### Partial NER (Some Entity Types Present)
@@ -463,7 +485,7 @@ This format will fail validation. Each example must contain at least one annotat
 
 ### Empty Entities Dictionary
 
-**⚠️ Note**: While an empty entities dictionary is syntactically valid, examples must have at least one task. If you only have empty entities, add at least one other task (classification, structure, or relation).
+**⚠️ Note**: An empty entities dictionary declares no entity types, so it is not a task on its own. To use the text as an NER negative, declare the types it is negative for (`{"entities": {"person": []}}`) or supply `entity_descriptions` for them; otherwise add at least one other task (classification, structure, or relation).
 
 ```jsonl
 {"input": "The weather is nice today.", "output": {"entities": {}, "classifications": [{"task": "sentiment", "labels": ["positive", "negative"], "true_label": ["positive"]}]}}
@@ -598,7 +620,7 @@ This format will fail validation. Each example must contain at least one annotat
 4. **Balance your classes** in classification tasks
 5. **Use realistic text** that matches your target domain
 6. **Include multiple instances** for JSON structures when applicable
-7. **For negative examples**, include at least one task (e.g., empty entities but a classification, or empty classifications but entities)
+7. **For negative examples**, declare the labels the text is negative for (e.g., `{"entities": {"person": []}}`, or `entity_descriptions` for every label), or pair them with another task
 8. **Mix task types** to train multi-task capabilities
 9. **Use consistent formatting** for similar examples
 10. **Include special characters** to ensure robust handling
