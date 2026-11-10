@@ -108,6 +108,41 @@ class ManagedTrainingPlan:
         return copy.deepcopy([self._examples[i] for i in self._order[start:start + self.config.batch_size]])
 
 
+    def to_manifest(self, *, eval_examples: list[InputExample] | None = None) -> dict:
+        """Serialize the exact batch/update/evaluation plan for a durable dispatcher.
+
+        A consumer executes this schedule rather than reimplementing shuffle or
+        accumulation. The content digest includes validation and best/stop policy;
+        changing any input therefore changes operation idempotency keys.
+        """
+        batches = []
+        step = 0
+        for index in range(self.batch_count):
+            self.batch(index)  # Populate the same epoch ordering used by batch().
+            start = (index % self.batches_per_epoch) * self.config.batch_size
+            update = self.is_update(index)
+            step += int(update)
+            evaluate = ((self.config.eval_strategy == "epoch" and self.is_epoch_end(index))
+                        or (self.config.eval_strategy == "steps" and update
+                            and step % self.config.eval_steps == 0))
+            batches.append({"indices": self._order[start:start + self.config.batch_size],
+                            "epoch": self.epoch(index), "update": update, "evaluate": evaluate})
+        config = asdict(self.config)
+        config.pop("output_dir")
+        manifest = {"version": 1, "source_fingerprint": self.fingerprint,
+                    "architecture": self.architecture, "config": config,
+                    "max_steps": self.max_steps,
+                    "examples": [row.to_dict() for row in self._examples], "batches": batches,
+                    "eval_examples": [row.to_dict() for row in eval_examples or []],
+                    "eval_batch_size": min(self.config.eval_batch_size, self.config.batch_size),
+                    "save_best": self.config.save_best, "greater_is_better": self.config.greater_is_better,
+                    "early_stopping_patience": self.config.early_stopping_patience if self.config.early_stopping else None,
+                    "early_stopping_threshold": self.config.early_stopping_threshold}
+        manifest["fingerprint"] = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return manifest
+
+
 class ManagedTraining:
     """In-process reference driver for the same plan used by remote dispatch.
 

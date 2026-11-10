@@ -79,3 +79,18 @@ CUBLAS_WORKSPACE_CONFIG=:4096:8 pytest -q tests/test_training_session_cuda.py
 The GPU suite runs real CUDA span fp32/fp16/bf16 and boundary fp32/bf16 for both
 full weights and LoRA. A CPU skip is not GPU qualification. A T4 should run six
 cases and skip four bf16 cases because the device lacks native bf16 support.
+
+`ManagedTrainingPlan.to_manifest(eval_examples=...)` exports a content-addressed
+JSON schedule with exact row indices, update boundaries, validation boundaries,
+and selection policy. A remote controller can replay this schedule through its
+existing durable operation queue, assigning stable operation keys from the run
+identity and manifest fingerprint. The manifest contains training examples;
+store it with the same authorization and retention as the source dataset.
+
+`TrainingSession.load_weights(checkpoint)` starts a new training run from a
+complete checkpoint's model weights while keeping the new run's fresh optimizer,
+schedule, random state, and zero pending gradients. `load_state(checkpoint)` instead
+restores all continuation state and requires the same training configuration.
+An optional `trainer_factory` can supply a subclass of the native trainer; its
+`session_state_dict` / `load_session_state_dict` hooks include recovery buffers in
+the same complete checkpoint. The session never adds a second optimizer loop.

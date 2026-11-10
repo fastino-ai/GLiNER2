@@ -94,3 +94,19 @@ def test_plan_and_checkpoint_fail_closed_on_changed_dataset(tmp_path):
         a.save_state(tmp_path / "checkpoint")
     for run in (a, b):
         run.close()
+
+
+@pytest.mark.parametrize("architecture", ["span", "boundary"])
+def test_manifest_is_the_same_exact_schedule_and_includes_validation(tmp_path, architecture):
+    import json
+    cfg = config(tmp_path / "managed", batch_size=2, gradient_accumulation_steps=2,
+                 num_epochs=2, eval_strategy="epoch")
+    plan = ManagedTrainingPlan(ROWS * 5, cfg, architecture=architecture)
+    manifest = json.loads(json.dumps(plan.to_manifest(eval_examples=ROWS)))
+    for index, batch in enumerate(manifest["batches"]):
+        assert [manifest["examples"][i] for i in batch["indices"]] == [row.to_dict() for row in plan.batch(index)]
+        assert batch["update"] == plan.is_update(index)
+        assert batch["evaluate"] == plan.is_epoch_end(index)
+    assert sum(batch["update"] for batch in manifest["batches"]) == plan.max_steps
+    assert manifest == plan.to_manifest(eval_examples=ROWS)
+    assert manifest["fingerprint"] != plan.to_manifest()["fingerprint"]
