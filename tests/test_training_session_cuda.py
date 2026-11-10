@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="requires 
 ])
 @pytest.mark.parametrize("use_lora", [False, True])
 def test_cuda_training_continuation_and_managed_equivalence(tmp_path, builder, precision, use_lora):
-    if precision == "bf16" and not torch.cuda.is_bf16_supported():
+    if precision == "bf16" and torch.cuda.get_device_capability()[0] < 8:
         pytest.skip("hardware does not support bfloat16")
     cfg = config(tmp_path / "a", fp16=precision == "fp16", bf16=precision == "bf16",
                  use_lora=use_lora, lora_r=2, lora_alpha=4,
@@ -42,9 +42,16 @@ def test_cuda_training_continuation_and_managed_equivalence(tmp_path, builder, p
     managed.save_state(tmp_path / "pending")
     managed.run()
     expected = {name: value.detach().cpu().clone() for name, value in session.model.state_dict().items()}
+    checkpoint = torch.load(tmp_path / "pending" / "training-state.pt", map_location="cpu", weights_only=True)
     resumed_session = TrainingSession(builder(seed=99), replace(cfg, output_dir=str(tmp_path / "b")), max_steps=plan.max_steps)
     resumed = ManagedTraining(resumed_session, plan)
     resumed.load_state(tmp_path / "pending")
+    for name, parameter in resumed_session.model.named_parameters():
+        torch.testing.assert_close(parameter.detach().cpu(), checkpoint["model"][name], rtol=0, atol=0)
+        gradient = checkpoint["gradients"].get(name)
+        if gradient is not None:
+            torch.testing.assert_close(parameter.grad.cpu(), gradient, rtol=0, atol=0)
+    assert torch.equal(torch.cuda.get_rng_state(), checkpoint["cuda_rng"][0])
     resumed.run()
     for name, value in resumed_session.model.state_dict().items():
         torch.testing.assert_close(value.cpu(), expected[name], rtol=0, atol=0)

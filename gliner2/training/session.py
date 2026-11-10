@@ -39,6 +39,8 @@ class TrainingSession:
             raise ValueError("unsupported extractor architecture")
         if (config.fp16 or config.bf16) and not torch.cuda.is_available():
             raise ValueError("mixed precision sessions require CUDA")
+        if config.bf16 and torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
+            raise ValueError("bfloat16 sessions require native GPU support, not emulation")
         if config.num_workers != 0:
             raise ValueError("session preprocessing requires num_workers=0 for replayable RNG")
         if config.skip_step_errors or config.on_capacity_exceeded != "raise" or config.dry_run_recall_steps:
