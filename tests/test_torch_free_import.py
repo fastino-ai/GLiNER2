@@ -55,3 +55,20 @@ def test_torch_free_import():
     assert result.returncode == 0, (
         f"Torch-free import test failed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
+
+
+def test_managed_planning_without_any_ml_stack():
+    script = """
+import sys
+from gliner2.training import InputExample, TrainingConfig, ManagedTrainingPlan
+cfg = TrainingConfig(num_workers=0, batch_size=2, num_epochs=2, fp16=False, bf16=False)
+rows = [InputExample(text='john works', entities={'person': ['john']})] * 5
+for architecture in ('span', 'boundary'):
+    plan = ManagedTrainingPlan(rows, cfg, architecture=architecture)
+    manifest = plan.to_manifest(eval_examples=rows[:1])
+    assert len(manifest['batches']) == 6
+    assert manifest == plan.to_manifest(eval_examples=rows[:1])
+assert not {'torch', 'transformers', 'safetensors', 'gliner', 'numpy'} & set(sys.modules)
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

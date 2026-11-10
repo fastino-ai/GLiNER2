@@ -19,9 +19,28 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Protocol
 
+from gliner2.training.config import TrainingConfig
 from gliner2.training.data import InputExample
-from gliner2.training.sampler import LengthGroupedSampler
-from gliner2.training.trainer import TrainingConfig
+
+
+def _length_grouped_order(lengths: list[int], batch_size: int, window_batches: int, seed: int) -> list[int]:
+    """Use one pure schedule for local and remote managed drivers.
+
+    The legacy trainer's Torch sampler remains unchanged. This new API owns its
+    random stream so planning cannot depend on a GPU/ML installation or its RNG.
+    """
+    rng = random.Random(seed)
+    order = list(range(len(lengths)))
+    rng.shuffle(order)
+    batches = []
+    window = batch_size * window_batches
+    for start in range(0, len(order), window):
+        group = sorted(order[start:start + window], key=lengths.__getitem__)
+        batches.extend(group[offset:offset + batch_size] for offset in range(0, len(group), batch_size))
+    full = [batch for batch in batches if len(batch) == batch_size]
+    partial = [batch for batch in batches if len(batch) != batch_size]
+    rng.shuffle(full)
+    return [index for batch in full + partial for index in batch]
 
 
 class SessionOperations(Protocol):
@@ -94,11 +113,9 @@ class ManagedTrainingPlan:
         epoch = self.epoch(index)
         if self._cached_epoch != epoch:
             if self.shuffle and self.architecture == "boundary" and self.config.group_by_length:
-                sampler = LengthGroupedSampler(
+                self._order = _length_grouped_order(
                     [max(1, len(row.text.split())) for row in self._examples], self.config.batch_size,
-                    window_batches=self.config.length_group_window_batches, seed=self.config.seed)
-                sampler.set_epoch(epoch)
-                self._order = list(sampler)
+                    self.config.length_group_window_batches, self.config.seed + epoch)
             else:
                 self._order = list(range(len(self._examples)))
                 if self.shuffle:

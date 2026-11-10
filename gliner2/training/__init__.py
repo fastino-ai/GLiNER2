@@ -31,7 +31,7 @@ _LAZY = {
     "TrainingSession": ("gliner2.training.session", "TrainingSession"),
     "ExtractorTrainer": ("gliner2.training.trainer", "ExtractorTrainer"),
     "GLiNER2Trainer": ("gliner2.training.trainer", "GLiNER2Trainer"),
-    "TrainingConfig": ("gliner2.training.trainer", "TrainingConfig"),
+    "TrainingConfig": ("gliner2.training.config", "TrainingConfig"),
     "TrainingMetrics": ("gliner2.training.trainer", "TrainingMetrics"),
     "ExtractorDataset": ("gliner2.training.trainer", "ExtractorDataset"),
     "ExtractorCollator": ("gliner2.training.trainer", "ExtractorCollator"),

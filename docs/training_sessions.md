@@ -94,3 +94,18 @@ restores all continuation state and requires the same training configuration.
 An optional `trainer_factory` can supply a subclass of the native trainer; its
 `session_state_dict` / `load_session_state_dict` hooks include recovery buffers in
 the same complete checkpoint. The session never adds a second optimizer loop.
+
+Planning requires no Torch, NumPy, Transformers, or model weights:
+
+```python
+from gliner2.training import InputExample, TrainingConfig, ManagedTrainingPlan
+
+config = TrainingConfig(num_workers=0, fp16=False, bf16=False)
+plan = ManagedTrainingPlan(examples, config, architecture="boundary")
+manifest = plan.to_manifest(eval_examples=validation_examples)
+```
+
+The new managed planner owns a deterministic Python random stream for shuffling
+and length grouping. It does not reuse the legacy trainer's Torch sampler stream;
+the legacy sampler remains unchanged. Hardware precision checks happen when the
+training engine is created, so a CPU control plane can plan a CUDA run.
