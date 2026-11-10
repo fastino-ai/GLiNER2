@@ -1,11 +1,18 @@
 # Training sessions and managed runs
 
 `TrainingSession` exposes bounded operations over the same native trainer engine:
-`forward`, `forward_backward`, `optim_step`, `save_state`, `load_state`, and
+`forward`, `forward_backward`, `optim_step`, `save_state`, `load_state`, `load_weights`, and
 `export_weights`. It supports span and boundary models, full-weight training,
 and one trainable default PEFT LoRA adapter. A native trained-model export can
 start another run. A preloaded adapter must match its declared rank, alpha,
 dropout, targets and DoRA setting; it is continued without reinitialization.
+`load_weights` also accepts native full-model directories (including sharded
+weights) and matching PEFT adapter directories. A full model can seed fresh LoRA
+adapters. The caller must verify adapter base-model provenance. Loading validates
+topology and tensors before copying into existing optimizer-owned parameters;
+it preserves the new run's optimizer, schedule and RNG. Checkpointed LoRA uses
+non-reentrant activation checkpointing so frozen embeddings do not suppress
+encoder-adapter gradients.
 
 ```python
 from gliner2 import AutoExtractor

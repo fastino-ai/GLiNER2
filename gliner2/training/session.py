@@ -240,12 +240,23 @@ class TrainingSession:
     def load_weights(self, directory: str | Path) -> None:
         """Start from trained weights while preserving a fresh run's schedule/RNG.
 
-        The model and adapter topology must match. Optimizer hyperparameters,
-        schedule and batching can differ for the new training run.
+        Accepts a complete session checkpoint, native full-model directory, or
+        matching PEFT adapter directory. Native full models can seed a fresh LoRA
+        session. Optimizer hyperparameters, schedule and batching can differ.
+        The caller must verify an adapter artifact's base-model provenance.
         """
         self._ready()
         if self.step or self._pending or self.optimizer.state:
             raise ValueError("weights-only restore requires a fresh session")
+        if not (Path(directory) / "training-state.pt").is_file():
+            from gliner2.training.session_weights import native_weights
+            weights = native_weights(self.model, Path(directory))
+            try:
+                self.model.load_state_dict(weights, strict=True)
+            except BaseException:
+                self._broken = True
+                raise
+            return
         payload = torch.load(Path(directory) / "training-state.pt", map_location="cpu", weights_only=True)
         expected = self._configuration()
         if payload["version"] != 2 or any(payload["configuration"][key] != expected[key]

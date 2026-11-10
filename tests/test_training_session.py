@@ -233,3 +233,68 @@ def test_weights_only_continuation_keeps_new_schedule_and_optimizer(tmp_path):
         torch.testing.assert_close(value, a.model.state_dict()[name], rtol=0, atol=0)
     b.forward_backward(ROWS)
     assert b.optim_step() == 1
+
+
+@pytest.mark.parametrize("builder", [build_tiny_span_model, build_tiny_boundary_model])
+@pytest.mark.parametrize("parent_lora,child_lora", [(False, False), (False, True), (True, True)])
+def test_native_trained_artifact_preserves_fresh_optimizer_and_rng(tmp_path, builder, parent_lora, child_lora):
+    options = dict(lora_r=2, lora_alpha=4, lora_dropout=0.1,
+                   lora_target_modules=["encoder", "all_task_heads"], gradient_checkpointing=True,
+                   encoder_lr=1e-5, task_lr=1e-4)
+    parent = TrainingSession(builder(), config(tmp_path / "a", use_lora=parent_lora, **options), max_steps=2)
+    parent.forward_backward(ROWS)
+    if parent_lora:
+        gradients = [value.grad for name, value in parent.model.named_parameters()
+                     if ".encoder." in name and "lora_B" in name]
+        assert gradients and any(value is not None and torch.count_nonzero(value) for value in gradients)
+    parent.optim_step()
+    parent.model.save_pretrained(str(tmp_path / "native"))
+    child = TrainingSession(builder(), config(tmp_path / "b", use_lora=child_lora, **options), max_steps=3)
+    parameters = {name: id(value) for name, value in child.model.named_parameters()}
+    rng = torch.get_rng_state().clone()
+    child.load_weights(tmp_path / "native")
+    assert parameters == {name: id(value) for name, value in child.model.named_parameters()}
+    assert torch.equal(rng, torch.get_rng_state())
+    assert child.step == 0 and not child.optimizer.state and child.pending_batches == 0
+    parent.model.eval()
+    child.model.eval()
+    child.export_weights(tmp_path / "child-full")
+    parent.export_weights(tmp_path / "parent-full")
+    from safetensors.torch import load_file
+    actual = load_file(str(tmp_path / "child-full" / "model.safetensors"))
+    expected = load_file(str(tmp_path / "parent-full" / "model.safetensors"))
+    assert actual.keys() == expected.keys()
+    for key in expected:
+        torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
+    child.forward_backward(ROWS)
+    assert child.optim_step() == 1
+
+
+def test_native_import_shards_and_mismatch_leave_fresh_session_unchanged(tmp_path):
+    import json
+
+    from safetensors.torch import load_file, save_file
+    parent = TrainingSession(build_tiny_span_model(), config(tmp_path / "a"), max_steps=2)
+    parent.forward_backward(ROWS)
+    parent.optim_step()
+    parent.model.save_pretrained(str(tmp_path / "native"), max_shard_size="50KB")
+    child = TrainingSession(build_tiny_span_model(), config(tmp_path / "b"), max_steps=2)
+    child.load_weights(tmp_path / "native")
+    for name, value in parent.model.state_dict().items():
+        torch.testing.assert_close(child.model.state_dict()[name], value, rtol=0, atol=0)
+    parent.export_weights(tmp_path / "bad")
+    weights = load_file(str(tmp_path / "bad" / "model.safetensors"))
+    first = next(iter(weights))
+    weights[first] = weights[first].flatten()[:1]
+    save_file(weights, str(tmp_path / "bad" / "model.safetensors"))
+    before = {key: value.clone() for key, value in child.model.state_dict().items()}
+    with pytest.raises(ValueError, match="shape"):
+        child.load_weights(tmp_path / "bad")
+    for name, value in before.items():
+        torch.testing.assert_close(child.model.state_dict()[name], value, rtol=0, atol=0)
+    metadata_path = tmp_path / "bad" / "config.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["architecture"] = "boundary"
+    metadata_path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="configuration"):
+        child.load_weights(tmp_path / "bad")

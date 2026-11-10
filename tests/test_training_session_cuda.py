@@ -30,7 +30,8 @@ def test_cuda_training_continuation_and_managed_equivalence(tmp_path, builder, p
     if precision == "bf16" and torch.cuda.get_device_capability()[0] < 8:
         pytest.skip("hardware does not support bfloat16")
     cfg = config(tmp_path / "a", fp16=precision == "fp16", bf16=precision == "bf16",
-                 use_lora=use_lora, lora_r=2, lora_alpha=4,
+                 use_lora=use_lora, lora_r=2, lora_alpha=4, lora_dropout=0.1,
+                 encoder_lr=1e-5, task_lr=1e-4, gradient_checkpointing=True,
                  lora_target_modules=["encoder", "all_task_heads"],
                  gradient_accumulation_steps=2, num_epochs=2, deterministic=True,
                  allow_tf32=False, float32_matmul_precision="highest")
@@ -39,6 +40,10 @@ def test_cuda_training_continuation_and_managed_equivalence(tmp_path, builder, p
     assert next(session.model.parameters()).device.type == "cuda"
     managed = ManagedTraining(session, plan)
     managed.advance()
+    if use_lora:
+        gradients = [value.grad for name, value in session.model.named_parameters()
+                     if ".encoder." in name and "lora_B" in name]
+        assert gradients and any(value is not None and torch.count_nonzero(value) for value in gradients)
     managed.save_state(tmp_path / "pending")
     managed.run()
     expected = {name: value.detach().cpu().clone() for name, value in session.model.state_dict().items()}

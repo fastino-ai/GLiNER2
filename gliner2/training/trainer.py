@@ -491,7 +491,9 @@ class ExtractorTrainer:
             enable = getattr(encoder, "gradient_checkpointing_enable", None)
             if enable is None:
                 raise ValueError("encoder does not support gradient checkpointing")
-            enable()
+            # Non-reentrant checkpointing keeps adapter gradients when frozen
+            # embeddings produce inputs without requires_grad.
+            enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         if config.compile_model:
             compile_method = getattr(base_model, "compile", None)
             if compile_method is None:
