@@ -848,6 +848,12 @@ class ExtractorTrainer:
 
     def _setup_lora(self):
         """Setup LoRA for parameter-efficient fine-tuning if enabled."""
+        if self.config.use_lora and isinstance(self.model, PeftModel):
+            from gliner2.training.session_adapters import validate_loaded_adapter
+            validate_loaded_adapter(self.model, self.config)
+            self.lora_layers = {n: m for n, m in self.model.named_modules() if isinstance(m, _PeftLoraLayer)}
+            self.model._lora_layers = self.lora_layers
+            return
         if not self.config.use_lora:
             logger.info("LoRA is disabled")
             return
@@ -1310,13 +1316,15 @@ class ExtractorTrainer:
         )
 
         if self.config.fp16:
+            previous_scale = self.scaler.get_scale()
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            if self.scaler.get_scale() < previous_scale:
+                self.optimizer.zero_grad(set_to_none=True)
+                return False
         else:
             self.optimizer.step()
 
-        # Non-finite loss/gradient handling is device-side before this point.
-        # Avoid GradScaler.get_scale(), which synchronizes every optimizer step.
         self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
         return True

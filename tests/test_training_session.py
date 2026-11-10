@@ -7,8 +7,8 @@ import torch
 from gliner2 import AutoExtractor
 from gliner2.training import InputExample, TrainingConfig
 from gliner2.training.session import TrainingSession
+from tests.fixtures.tiny_boundary_checkpoint import build_tiny_boundary_model
 from tests.fixtures.tiny_span_checkpoint import build_tiny_span_model
-
 
 ROWS = [InputExample(text="john works at google", entities={"person": ["john"]})]
 
@@ -98,3 +98,87 @@ def test_session_rejects_unqualified_or_lossy_configuration(tmp_path, options):
         setattr(cfg, name, value)
     with pytest.raises(ValueError):
         TrainingSession(build_tiny_span_model(), cfg, max_steps=2)
+
+
+@pytest.mark.parametrize("builder", [build_tiny_span_model, build_tiny_boundary_model])
+@pytest.mark.parametrize("use_lora", [False, True])
+def test_family_state_continuation_and_native_export(tmp_path, builder, use_lora):
+    cfg = config(tmp_path / "a", use_lora=use_lora, lora_r=2, lora_alpha=4,
+                 lora_target_modules=["encoder", "all_task_heads"], gradient_accumulation_steps=2)
+    a = TrainingSession(builder(), cfg, max_steps=3)
+    a.forward_backward(ROWS)
+    a.optim_step()
+    a.forward_backward(ROWS)
+    a.save_state(tmp_path / "pending")
+    a.forward_backward(ROWS)
+    a.optim_step()
+    expected = {k: v.clone() for k, v in a.model.state_dict().items()}
+    b = TrainingSession(builder(seed=99), replace(cfg, output_dir=str(tmp_path / "b")), max_steps=3)
+    b.load_state(tmp_path / "pending")
+    b.forward_backward(ROWS)
+    b.optim_step()
+    for name, value in b.model.state_dict().items():
+        torch.testing.assert_close(value, expected[name], rtol=0, atol=0)
+    b.export_weights(tmp_path / "export")
+    for name, value in b.model.state_dict().items():
+        torch.testing.assert_close(value, expected[name], rtol=0, atol=0)
+    loaded = AutoExtractor.from_pretrained(str(tmp_path / "export")).to("cpu")
+    loaded.eval()
+    b.model.eval()
+    assert loaded.extract_entities("john works at google", ["person"], threshold=0.0) == b.model.extract_entities("john works at google", ["person"], threshold=0.0)
+    # A trained full-model artifact can start another full-weight or LoRA run.
+    continued = TrainingSession(loaded, replace(cfg, output_dir=str(tmp_path / "continued")), max_steps=2)
+    assert continued.forward_backward(ROWS)["loss"] > 0
+    assert continued.optim_step() == 1
+
+
+def test_preloaded_adapter_continues_without_reinitialization(tmp_path):
+    from peft import PeftModel
+    cfg = config(tmp_path / "a", use_lora=True, lora_r=2, lora_alpha=4, lora_target_modules=["encoder"])
+    base = build_tiny_span_model()
+    base.save_pretrained(str(tmp_path / "base"))
+    a = TrainingSession(base, cfg, max_steps=3)
+    a.forward_backward(ROWS)
+    a.optim_step()
+    a.model.save_pretrained(tmp_path / "adapter")
+    loaded = PeftModel.from_pretrained(AutoExtractor.from_pretrained(str(tmp_path / "base")), str(tmp_path / "adapter"), is_trainable=True)
+    expected = {k: v.clone() for k, v in loaded.state_dict().items()}
+    b = TrainingSession(loaded, replace(cfg, output_dir=str(tmp_path / "b")), max_steps=3)
+    for name, value in b.model.state_dict().items():
+        torch.testing.assert_close(value, expected[name], rtol=0, atol=0)
+    b.forward_backward(ROWS)
+    b.optim_step()
+    assert any(not torch.equal(expected[k], v) for k, v in b.model.state_dict().items())
+    with pytest.raises(ValueError, match="LoRA"):
+        TrainingSession(loaded, replace(cfg, lora_r=8), max_steps=3)
+    with pytest.raises(ValueError, match="LoRA"):
+        TrainingSession(loaded, replace(cfg, use_lora=False), max_steps=3)
+
+
+def test_native_amp_skip_keeps_schedule_and_weights_unchanged(tmp_path):
+    session = TrainingSession(build_tiny_span_model(), config(tmp_path), max_steps=2)
+    # Exercise the real GradScaler overflow branch on CPU. CUDA qualification
+    # is separate; no fake scaler or mocked successful update is used here.
+    trainer = session.trainer
+    trainer.config.fp16 = True
+    trainer.scaler = torch.amp.GradScaler("cpu", enabled=True)
+    parameter = next(p for p in session.model.parameters() if p.requires_grad)
+    trainer.scaler.scale(parameter.sum()).backward()
+    parameter.grad.fill_(float("inf"))
+    before = parameter.clone()
+    scale = trainer.scaler.get_scale()
+    assert trainer._optimizer_step() is False
+    assert trainer.scaler.get_scale() < scale
+    assert trainer.scheduler.last_epoch == 0
+    assert not session.optimizer.state
+    torch.testing.assert_close(parameter, before, rtol=0, atol=0)
+
+
+def test_restore_rejects_changed_label_sampling(tmp_path):
+    a = TrainingSession(build_tiny_span_model(), config(tmp_path / "a"), max_steps=2)
+    a.save_state(tmp_path / "state")
+    changed = build_tiny_span_model()
+    changed.processor.sampling_config.remove_entities_prob = 1.0
+    b = TrainingSession(changed, config(tmp_path / "b"), max_steps=2)
+    with pytest.raises(ValueError, match="configuration"):
+        b.load_state(tmp_path / "state")

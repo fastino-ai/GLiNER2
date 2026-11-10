@@ -1,11 +1,13 @@
 """Bounded operations over the same engine used by ``ExtractorTrainer.train``.
 
-The first adapter supports a single-process, full-weight span extractor. It
-does not own queues, epochs, placement, remote storage or checkpoint identity.
+Supports single-process span and boundary extractors with full weights or LoRA.
+It does not own queues, placement, remote storage or checkpoint identity.
 Callers serialize operations and provide trusted, session-owned local paths.
 """
 from __future__ import annotations
 
+import copy
+import json
 import os
 import random
 from dataclasses import asdict
@@ -14,31 +16,42 @@ from typing import Any
 
 import numpy as np
 import torch
+from peft import PeftModel
 
 from gliner2.training.data import InputExample
 from gliner2.training.trainer import ExtractorTrainer, TrainingConfig, get_scheduler
 
 
 class TrainingSession:
-    """Public batch, update, state and export operations for a span extractor.
+    """Public batch, update, state and native export operations.
 
-    This bounded proof deliberately rejects LoRA, distributed execution and
-    boundary models until their state/export equivalence is qualified. A
-    process must not interleave sessions: PyTorch and processor RNGs are global.
+    A process must not interleave sessions: PyTorch and processor RNGs are global.
+    Distributed workers and graph compilation require separate qualification.
+    Mixed precision requires CUDA; CPU requests fail rather than downgrade.
     """
 
     def __init__(self, model: torch.nn.Module, config: TrainingConfig, *, max_steps: int):
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
-        if config.use_lora or config.local_rank != -1 or getattr(model, "architecture", "span") != "span":
-            raise ValueError("session proof supports single-process full-weight span models only")
-        if config.fp16 or config.bf16:
-            raise ValueError("session proof supports fp32 only")
+        if config.local_rank != -1 or config.compile_model:
+            raise ValueError("sessions require uncompiled single-process execution")
+        if getattr(model, "architecture", "span") not in {"span", "boundary"}:
+            raise ValueError("unsupported extractor architecture")
+        if (config.fp16 or config.bf16) and not torch.cuda.is_available():
+            raise ValueError("mixed precision sessions require CUDA")
+        if config.num_workers != 0:
+            raise ValueError("session preprocessing requires num_workers=0 for replayable RNG")
+        if config.skip_step_errors or config.on_capacity_exceeded != "raise" or config.dry_run_recall_steps:
+            raise ValueError("sessions must not silently discard work or run recall-only training")
         if config.max_train_samples != -1 or config.max_eval_samples != -1 or config.allow_invalid_samples:
             raise ValueError("session batches must not silently truncate or skip samples")
         if not config.strict_training or config.ignore_nonfinite_losses:
             raise ValueError("session batches require strict finite-loss training")
-        self.trainer = ExtractorTrainer(model, config)
+        if isinstance(model, PeftModel):
+            from gliner2.training.session_adapters import validate_loaded_adapter
+            validate_loaded_adapter(model, config)
+        self.trainer = ExtractorTrainer(model, copy.deepcopy(config))
+        config = self.trainer.config
         self.trainer._planned_max_steps = max_steps
         self.trainer.optimizer = self.trainer._create_optimizer()
         warmup = config.warmup_steps or int(max_steps * config.warmup_ratio)
@@ -59,6 +72,18 @@ class TrainingSession:
     @property
     def step(self) -> int:
         return self.trainer.global_step
+
+    @property
+    def config(self) -> TrainingConfig:
+        return self.trainer.config
+
+    @property
+    def max_steps(self) -> int:
+        return self.trainer._planned_max_steps
+
+    @property
+    def pending_batches(self) -> int:
+        return self._pending
 
     def _ready(self) -> None:
         if self._broken:
@@ -118,7 +143,9 @@ class TrainingSession:
             raise ValueError("no accumulated gradients")
         try:
             self.trainer._renormalize_partial_accumulation(self._pending)
-            self.trainer._optimizer_step()
+            applied = self.trainer._optimizer_step()
+            if not applied:
+                raise FloatingPointError("optimizer skipped a non-finite update; restore and retry")
         except BaseException:
             self._broken = True
             raise
@@ -129,8 +156,14 @@ class TrainingSession:
     def _configuration(self) -> dict[str, Any]:
         config = asdict(self.trainer.config)
         config.pop("output_dir")
+        adapter = None
+        if isinstance(self.model, PeftModel):
+            adapter = json.loads(json.dumps(self.model.peft_config["default"].to_dict(),
+                                           default=lambda value: sorted(value) if isinstance(value, set) else value.value))
+            adapter.pop("base_model_name_or_path", None)
         return {"training": config, "model": self.model.config.to_dict(),
-                "max_steps": self.trainer._planned_max_steps}
+                "adapter": adapter, "sampling": asdict(self.trainer.processor.sampling_config),
+                "max_steps": self.max_steps}
 
     def save_state(self, directory: str | Path) -> None:
         """Save weights, Adam moments, schedule, scaler, gradients and RNGs.
@@ -143,7 +176,7 @@ class TrainingSession:
         path.mkdir(parents=True, exist_ok=True)
         numpy_state = np.random.get_state()
         payload = {
-            "version": 1, "configuration": self._configuration(),
+            "version": 2, "configuration": self._configuration(),
             "model": self.model.state_dict(), "optimizer": self.optimizer.state_dict(),
             "scheduler": self.trainer.scheduler.state_dict(), "scaler": self.trainer.scaler.state_dict(),
             "step": self.step, "pending": self._pending,
@@ -167,7 +200,7 @@ class TrainingSession:
         if self.step or self._pending:
             raise ValueError("restore requires a fresh session")
         payload = torch.load(Path(directory) / "training-state.pt", map_location="cpu", weights_only=True)
-        if payload["version"] != 1 or payload["configuration"] != self._configuration():
+        if payload["version"] != 2 or payload["configuration"] != self._configuration():
             raise ValueError("checkpoint configuration does not match session")
         if payload["device_type"] != self.trainer.device.type:
             raise ValueError("cross-device continuation is not qualified")
@@ -191,9 +224,35 @@ class TrainingSession:
             self._broken = True
             raise
 
-    def export_weights(self, directory: str | Path) -> None:
+    def _copy_model_to_cpu(self) -> torch.nn.Module:
+        # Allocate detached export parameters on CPU directly; deepcopying a
+        # CUDA model first would need a second full model on the training GPU.
+        memo = {id(parameter): torch.nn.Parameter(parameter.detach().to("cpu", copy=True),
+                                                requires_grad=parameter.requires_grad)
+                for parameter in self.model.parameters()}
+        memo.update({id(buffer): buffer.detach().to("cpu", copy=True) for buffer in self.model.buffers()})
+        return copy.deepcopy(self.model, memo)
+
+    def export_weights(self, directory: str | Path, *, checkpoint: str | Path | None = None) -> None:
         """Export the native full-model artifact accepted by AutoExtractor."""
         self._ready()
         if self._pending:
             raise ValueError("apply accumulated gradients before exporting weights")
-        self.model.save_pretrained(str(directory))
+        exported = self.model
+        if checkpoint is not None:
+            payload = torch.load(Path(checkpoint) / "training-state.pt", map_location="cpu", weights_only=True)
+            if payload["version"] != 2 or payload["configuration"] != self._configuration():
+                raise ValueError("checkpoint configuration does not match session")
+            if payload["pending"]:
+                raise ValueError("cannot export a checkpoint with pending gradients")
+            exported = self._copy_model_to_cpu()
+            exported.load_state_dict(payload["model"], strict=True)
+        if isinstance(exported, PeftModel):
+            # Merge a detached copy: export must not perturb live weights,
+            # adapter topology, optimizer references or subsequent training.
+            if exported is self.model:
+                exported = self._copy_model_to_cpu()
+            exported = exported.merge_and_unload(safe_merge=True)
+            exported.save_pretrained(str(directory))
+        else:
+            exported.save_pretrained(str(directory))
