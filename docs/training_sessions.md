@@ -65,10 +65,9 @@ optimizer trajectory. Checkpoints are trusted service-owned files loaded with
 One process owns one session; all operations must be serialized because native
 preprocessing and Torch RNGs are process-global. `num_workers=0` is required.
 Distributed training, graph compilation, lossy sample/capacity skipping and
-cross-device continuation are rejected. CUDA mixed precision is supported by
-the engine; CPU mixed-precision requests fail instead of silently downgrading.
-Explicit precision avoids architecture-dependent defaults. Boundary fp16 is not
-part of the supported GPU qualification matrix.
+cross-device continuation are rejected. Hardware-native CUDA BF16 is supported;
+CPU mixed-precision and all FP16 session requests fail instead of silently
+downgrading. Explicit precision avoids architecture-dependent defaults.
 
 ## Qualification
 
@@ -83,8 +82,8 @@ pytest -q tests/test_training_session.py tests/test_managed_training_session.py
 CUBLAS_WORKSPACE_CONFIG=:4096:8 pytest -q tests/test_training_session_cuda.py
 ```
 
-The GPU suite runs real CUDA span fp32/fp16/bf16 and boundary fp32/bf16 for both
-full weights and LoRA. A CPU skip is not GPU qualification. A T4 should run six
+The GPU suite runs real CUDA span/boundary fp32/bf16 for both full weights and
+LoRA. A CPU skip is not GPU qualification. A T4 should run four
 cases and skip four bf16 cases because the device lacks native bf16 support.
 
 `ManagedTrainingPlan.to_manifest(eval_examples=...)` exports a content-addressed
