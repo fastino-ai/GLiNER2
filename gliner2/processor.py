@@ -556,7 +556,7 @@ class SchemaTransformer:
         """Public single-record transform in inference mode.
 
         Produces the same record ``collate_fn_inference`` would for this row:
-        inference mode, schema resolution and punctuation normalization.
+        inference mode, schema resolution, and offsets into the caller's text.
 
         Args:
             text: Input text.
@@ -569,7 +569,7 @@ class SchemaTransformer:
         """
         self.is_training = False
         record = {
-            "text": self._normalize_text(text),
+            "text": text,
             "schema": copy.deepcopy(self._resolve_schema(schema)),
         }
         return self._transform_record(record, max_len=max_len, build_targets=build_targets)
@@ -641,7 +641,6 @@ class SchemaTransformer:
 
         for text, schema in batch:
             schema = self._resolve_schema(schema)
-            text = self._normalize_text(text)
             record = {"text": text, "schema": copy.deepcopy(schema)}
 
             try:
@@ -687,7 +686,9 @@ class SchemaTransformer:
         """
         # OPT-4: Caller (_collate_batch) already deepcopies the schema.
         # Only deepcopy here for direct callers (transform_and_format).
-        text, schema = record["text"], record["schema"]
+        caller_text, schema = record["text"], record["schema"]
+        model_text = self._normalize_text(caller_text)
+        caller_len = len(caller_text)
 
         # Build classification prefix
         prefix = self._build_classification_prefix(schema)
@@ -704,10 +705,10 @@ class SchemaTransformer:
         text_tokens = []
         start_idx_map = []
         end_idx_map = []
-        for tkn, start, end in self.word_splitter(text, lower=True):
+        for tkn, start, end in self.word_splitter(model_text, lower=True):
             text_tokens.append(tkn)
             start_idx_map.append(start)
-            end_idx_map.append(end)
+            end_idx_map.append(min(end, caller_len))
 
         char_limit = None
         if max_len is not None and len(text_tokens) > max_len:
@@ -725,7 +726,7 @@ class SchemaTransformer:
         processed = self._infer_from_json(schema)
 
         ctx = _GoldContext(
-            text=text,
+            text=caller_text,
             text_tokens=text_tokens,
             start_idx_map=start_idx_map,
             end_idx_map=end_idx_map,
@@ -747,7 +748,7 @@ class SchemaTransformer:
             task_types=[r["task_type"] for r in results],
             start_token_idx=start_idx_map,
             end_token_idx=end_idx_map,
-            text=text,
+            text=caller_text,
             schema=original_schema,  # Use original schema with choice info preserved
             text_word_first_positions=format_result["text_word_first_positions"],
             schema_special_positions=format_result["schema_special_positions"],
@@ -894,8 +895,8 @@ class SchemaTransformer:
             structure_labels=[[0, []]],
             task_types=["entities"],
             start_token_idx=[0],
-            end_token_idx=[1],
-            text=text or ".",
+            end_token_idx=[0],
+            text=text,
             schema=schema or {},
         )
 
@@ -1413,6 +1414,11 @@ class SchemaTransformer:
         return self._find_sublist(self._tokenize_text(text), ctx.text_tokens)
 
     def _resolve_span(self, value: SurfaceSpan, ctx: _GoldContext) -> Tuple[int, int]:
+        if value.end > len(ctx.text):
+            raise ValueError(
+                f"gold span [{value.start}, {value.end}) is outside text "
+                f"of length {len(ctx.text)}"
+            )
         covered = ctx.text[value.start : value.end]
         if covered != value.text:
             raise ValueError(
