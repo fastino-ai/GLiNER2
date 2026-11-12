@@ -8,7 +8,7 @@ boundary architecture produces them natively.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Dict, List, Optional
 
 import torch
@@ -270,4 +270,15 @@ class ExtractorOutput:
 # which treats an UNREGISTERED dataclass as one opaque leaf: DDP's backward sink never enters the autograd graph and
 # the static-graph deferred all-reduce never fires, so multi-GPU ranks train on their own gradients and drift apart
 # silently. Registered, the output's tensors are visible to DDP.
-torch.utils._pytree.register_dataclass(ExtractorOutput)
+if hasattr(torch.utils._pytree, "register_dataclass"):
+    torch.utils._pytree.register_dataclass(ExtractorOutput)
+else:
+    # torch>=2.1 is supported; register_dataclass arrived after 2.6.
+    def _flatten_output(output):
+        names = [item.name for item in fields(output)]
+        return [getattr(output, name) for name in names], names
+
+    def _unflatten_output(values, names):
+        return ExtractorOutput(**dict(zip(names, values)))
+
+    torch.utils._pytree.register_pytree_node(ExtractorOutput, _flatten_output, _unflatten_output)

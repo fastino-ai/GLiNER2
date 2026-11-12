@@ -6,7 +6,7 @@ shims in :mod:`gliner2.training.lora`.
 from __future__ import annotations
 
 import torch.nn as nn
-
+from peft.tuners.tuners_utils import BaseTunerLayer
 
 ENCODER_PATTERNS = ("query", "key", "value", "dense")
 # Legacy fallback for models that predate ``task_module_names()``.
@@ -64,7 +64,13 @@ def _resolve_targets(model: nn.Module, targets: list[str]) -> list[str]:
     head_prefixes.update(target for target in targets if target in task_modules)
 
     selected: list[str] = []
+    wrapped: list[str] = []
     for name, module in model.named_modules():
+        if any(name.startswith(prefix + ".") for prefix in wrapped):
+            continue
+        if isinstance(module, BaseTunerLayer):
+            wrapped.append(name)
+            module = module.get_base_layer()
         if not isinstance(module, nn.Linear):
             continue
         local_name = name.rsplit(".", 1)[-1]

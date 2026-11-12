@@ -59,7 +59,7 @@ from typing import (
 from collections import Counter
 from tqdm import tqdm
 
-from gliner2.processing.targets import SurfaceSpan
+from gliner2.processing.surface import SurfaceSpan
 
 if TYPE_CHECKING:
     # Import-only (avoids a circular import with the trainer at runtime) so the

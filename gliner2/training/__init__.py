@@ -26,9 +26,12 @@ from gliner2.training.data import (
 )
 
 _LAZY = {
+    "ManagedTrainingPlan": ("gliner2.training.managed", "ManagedTrainingPlan"),
+    "ManagedTraining": ("gliner2.training.managed", "ManagedTraining"),
+    "TrainingSession": ("gliner2.training.session", "TrainingSession"),
     "ExtractorTrainer": ("gliner2.training.trainer", "ExtractorTrainer"),
     "GLiNER2Trainer": ("gliner2.training.trainer", "GLiNER2Trainer"),
-    "TrainingConfig": ("gliner2.training.trainer", "TrainingConfig"),
+    "TrainingConfig": ("gliner2.training.config", "TrainingConfig"),
     "TrainingMetrics": ("gliner2.training.trainer", "TrainingMetrics"),
     "ExtractorDataset": ("gliner2.training.trainer", "ExtractorDataset"),
     "ExtractorCollator": ("gliner2.training.trainer", "ExtractorCollator"),
@@ -36,6 +39,9 @@ _LAZY = {
 }
 
 __all__ = [
+    "ManagedTrainingPlan",
+    "ManagedTraining",
+    "TrainingSession",
     "ChoiceField",
     "Classification",
     "DataFormat",
