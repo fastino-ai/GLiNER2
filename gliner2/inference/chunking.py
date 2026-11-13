@@ -314,7 +314,19 @@ _SPAN_RESERVED = frozenset({"text", "confidence", "start", "end"})
 
 def _strip_span_metadata(value: Any, include_confidence: bool, include_spans: bool) -> Any:
     if isinstance(value, list):
-        return [_strip_span_metadata(item, include_confidence, include_spans) for item in value]
+        stripped_items = [
+            _strip_span_metadata(item, include_confidence, include_spans) for item in value
+        ]
+        # Spans are deduplicated by position in _dedupe_items, which correctly
+        # keeps the same surface text at different offsets. Once the offsets are
+        # stripped, though, those distinct mentions become identical strings that
+        # no caller can tell apart, so on a long document a term repeated 300
+        # times is returned 300 times. Collapse them, preserving first-seen
+        # order. Only bare strings are affected: anything still carrying
+        # confidence, offsets or attribute payloads stays untouched.
+        if stripped_items and all(isinstance(item, str) for item in stripped_items):
+            return list(dict.fromkeys(stripped_items))
+        return stripped_items
 
     if isinstance(value, dict):
         if _is_span_dict(value):
