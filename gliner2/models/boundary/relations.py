@@ -265,10 +265,10 @@ class TypedRelationPairGenerator:
         )
         if compact:
             # Decode-only metadata: Python conversion is intentionally absent
-            # from the training representation.
-            for index in range(len(out)):
-                batch_index = int(out.batch_index[index])
-                relation_index = int(out.relation_index[index])
+            # from the training representation. One host copy per field:
+            # reading device tensors element by element syncs once per element.
+            rows = zip(*(tensors[i].tolist() for i in (0, 1, 2, 3, 4, 5, 8, 9)))
+            for batch_index, relation_index, hs0, he0, ts0, te0, hquery, tquery in rows:
                 spec = relation_schemas[batch_index][relation_index]
                 layout = (
                     query_layouts[batch_index]
@@ -277,15 +277,13 @@ class TypedRelationPairGenerator:
                 out.relation_types.append(spec.relation_type)
                 # Endpoint type names are only presentation metadata. For the
                 # common single-type schema use the declared query directly.
-                hquery = int(tensors[8][index])
-                tquery = int(tensors[9][index])
                 out.head_keys.append((
                     _query_type(layout, hquery) if layout is not None else str(hquery),
-                    int(out.head_start[index]), int(out.head_end[index]),
+                    hs0, he0,
                 ))
                 out.tail_keys.append((
                     _query_type(layout, tquery) if layout is not None else str(tquery),
-                    int(out.tail_start[index]), int(out.tail_end[index]),
+                    ts0, te0,
                 ))
         return out
 
