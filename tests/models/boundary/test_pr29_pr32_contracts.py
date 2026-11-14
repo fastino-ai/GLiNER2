@@ -11,8 +11,10 @@ import torch.nn.functional as F
 from gliner2.configuration import BoundaryHeadSettings, migrate_config_dict
 from gliner2.models.base import QueryLayout
 from gliner2.models.boundary.records import (
+    DenseRecordBatchOutput,
     DenseRecordGroupOutput,
     build_dense_record_cost,
+    compute_dense_batch_loss,
     compute_dense_group_loss,
 )
 from gliner2.models.boundary.relations import (
@@ -199,6 +201,74 @@ def test_dense_record_capacity_counts_only_real_instances():
     ]
     with pytest.raises(TargetCapacityError, match="1 valid instance"):
         compute_dense_group_loss(group, records)
+
+
+def _list_group(assign_logits: torch.Tensor, real: int) -> DenseRecordGroupOutput:
+    spec = RecordSpec(
+        task_index=0, task_name="x", task_type="json_structures", mode="latent",
+        fields=(RecordFieldSpec(0, "items", 0, FieldCardinality.ZERO_OR_MORE),),
+    )
+    width = assign_logits.shape[-1] - 1
+    membership = torch.zeros(1, width, dtype=torch.bool)
+    membership[:, :real] = True
+    return DenseRecordGroupOutput(
+        spec=spec,
+        object_logits=torch.zeros(1),
+        assign_logits=assign_logits,
+        instance_mask=torch.ones(1, dtype=torch.bool),
+        field_membership=membership,
+        pool_spans=torch.stack((torch.arange(width), torch.arange(1, width + 1)), -1),
+        field_specs=spec.fields,
+        field_query_ids=torch.tensor([0]),
+        instance_pool_index=torch.tensor([0]),
+    )
+
+
+def test_dense_list_loss_ignores_pool_padding():
+    """Issue #180: padding columns must not dilute the list-field term."""
+    torch.manual_seed(7)
+    real, padded = 3, 16
+    logits = torch.randn(1, 1, 1 + padded)
+    gold = torch.zeros(1, 1, padded, dtype=torch.bool)
+    gold[0, 0, 1] = True
+    record = [RecordTarget("0", 0, (), anchor_query_id=None)]
+
+    loss_padded = compute_dense_group_loss(_list_group(logits, real), record, gold)
+    loss_real = compute_dense_group_loss(
+        _list_group(logits[..., : 1 + real], real), record, gold[..., :real]
+    )
+    expected = F.binary_cross_entropy_with_logits(
+        logits[0, 0, 1 : 1 + real], gold[0, 0, :real].float()
+    )
+    torch.testing.assert_close(loss_padded["field_loss"], expected)
+    torch.testing.assert_close(loss_real["field_loss"], expected)
+
+
+def test_dense_batch_list_loss_ignores_pool_padding():
+    torch.manual_seed(8)
+    real, padded = 3, 16
+    logits = torch.randn(1, 1, 1, 1, 1 + padded)
+    membership = torch.zeros(1, 1, 1, padded, dtype=torch.bool)
+    membership[..., :real] = True
+    gold = torch.zeros(1, 1, 1, 1, padded, dtype=torch.bool)
+    gold[..., 1] = True
+    output = DenseRecordBatchOutput(
+        object_logits=torch.zeros(1, 1, 1),
+        assign_logits=logits,
+        instance_mask=torch.ones(1, 1, 1, dtype=torch.bool),
+        field_membership=membership,
+        pool_spans=torch.stack((torch.arange(padded), torch.arange(1, padded + 1)), -1)[None],
+        field_mask=torch.ones(1, 1, 1, dtype=torch.bool),
+        scalar_fields=torch.zeros(1, 1, 1, dtype=torch.bool),
+        modes=torch.ones(1, 1, dtype=torch.long),
+        anchor_fields=torch.zeros(1, 1, dtype=torch.long),
+        group_mask=torch.ones(1, 1, dtype=torch.bool),
+    )
+    losses = compute_dense_batch_loss(output, gold, torch.ones(1, 1, 1, dtype=torch.bool))
+    expected = F.binary_cross_entropy_with_logits(
+        logits[0, 0, 0, 0, 1 : 1 + real], gold[0, 0, 0, 0, :real].float()
+    )
+    torch.testing.assert_close(losses["field_loss"], expected)
 
 
 def test_new_and_legacy_structured_config_defaults():
