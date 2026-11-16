@@ -295,7 +295,9 @@ class ExtractorRuntimeMixin:
                 f"hidden_states count ({len(hidden_states)}) != text count ({len(texts)})"
             )
 
-        self.eval()
+        if self.training:
+            # ``eval()`` walks every submodule; skip it when already in eval mode.
+            self.eval()
         self.processor.change_mode(is_training=False)
 
         if isinstance(schemas, list):
