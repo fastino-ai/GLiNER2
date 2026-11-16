@@ -550,13 +550,19 @@ class BaseExtractorModel(PreTrainedModel):
                 return
 
             sequence_length = int(input_ids.shape[1])
-            prepared_lengths = tuple(
-                sorted(int(length) for length in optimized_encoder._prepared_plans)
-            )
-            if sequence_length not in prepared_lengths:
-                optimized_encoder.prepare_for_inference(
-                    tuple(sorted(set(prepared_lengths) | {sequence_length}))
-                )
+            if sequence_length not in optimized_encoder._prepared_plans:
+                extend = getattr(optimized_encoder, "extend_prepared_lengths", None)
+                if extend is not None:
+                    # Prepares only the new length; cost is independent of
+                    # how many lengths were seen before.
+                    extend(sequence_length)
+                else:
+                    prepared_lengths = {
+                        int(length) for length in optimized_encoder._prepared_plans
+                    }
+                    optimized_encoder.prepare_for_inference(
+                        tuple(sorted(prepared_lengths | {sequence_length}))
+                    )
             optimized_encoder.activate_shape(sequence_length)
 
         self._disentangled_flash_hook_handle = (

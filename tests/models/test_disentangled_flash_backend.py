@@ -188,6 +188,27 @@ def test_forward_hook_prepares_new_lengths_and_reuses_them(monkeypatch):
     assert optimized.active_length == 12
 
 
+def test_forward_hook_extends_lengths_when_backend_supports_it(monkeypatch):
+    _install_fake_disentangled_flash(monkeypatch)
+    model = FakeExtractor()
+    BaseExtractorModel.enable_disentangled_flash(model)
+    optimized = model.encoder.encoder
+    extend_calls = []
+
+    def extend_prepared_lengths(length):
+        extend_calls.append(int(length))
+        optimized._prepared_plans[int(length)] = object()
+
+    optimized.extend_prepared_lengths = extend_prepared_lengths
+
+    for length in (8, 12, 8, 20):
+        model.encoder(input_ids=torch.ones(2, length, dtype=torch.long))
+
+    assert extend_calls == [8, 12, 20]
+    assert optimized.prepare_calls == []
+    assert optimized.active_length == 20
+
+
 def test_forward_hook_rejects_training_after_enable(monkeypatch):
     _install_fake_disentangled_flash(monkeypatch)
     model = FakeExtractor()
