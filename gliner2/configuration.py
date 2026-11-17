@@ -67,6 +67,7 @@ class BoundaryHeadSettings:
     hard_negatives_per_positive: int = 5
     minimum_hard_negatives: int = 8
     hard_negative_keep_all_when_absent: bool = False
+    pair_split_reduction: bool = True
     # Optional representation upgrades. Defaults preserve existing checkpoint
     # parameter sets and behavior.
     enable_span_content: bool = False
@@ -233,6 +234,9 @@ def validate_boundary_head(values: Mapping[str, Any]) -> dict:
                 "hard_negative_keep_all_when_absent",
                 d.hard_negative_keep_all_when_absent,
             )
+        ),
+        "pair_split_reduction": bool(
+            values.get("pair_split_reduction", d.pair_split_reduction)
         ),
         "enable_span_content": bool(
             values.get("enable_span_content", d.enable_span_content)

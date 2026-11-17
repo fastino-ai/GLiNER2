@@ -1281,7 +1281,7 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                         else None
                     )
                     probability = (
-                        min(candidate_probability, float(assignment_probability))
+                        float(assignment_probability)
                         if assignment_probability is not None
                         else candidate_probability
                     )
@@ -1332,8 +1332,9 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                     else None
                 )
                 probability = (
-                    min(candidate_probability, float(assignment_probability))
-                    if assignment_probability is not None
+                    float(assignment_probability)
+                    if assignment_scores is not None
+                    and assignment_probability is not None
                     else candidate_probability
                 )
                 configured_threshold = field_metadata.get("threshold")
@@ -1341,7 +1342,7 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                     surface
                     and (
                         not fspec.allows_absent
-                        or candidate_probability
+                        or probability
                         >= record_threshold
                     )
                     and (

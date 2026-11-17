@@ -1026,29 +1026,41 @@ def _list_field_bce(logits_row: torch.Tensor, positive_cols) -> torch.Tensor:
         idx = col - 1
         if 0 <= idx < n:
             target[idx] = 1.0
-    return F.binary_cross_entropy_with_logits(cand_logits, target, reduction="mean")
+    bce = F.binary_cross_entropy_with_logits(cand_logits, target, reduction="none")
+    pos = target > 0.5
+    if bool(pos.any()):
+        neg = ~pos
+        neg_mean = bce[neg].mean() if bool(neg.any()) else logits_row.new_zeros(())
+        return bce[pos].mean() + neg_mean
+    return bce.mean()
 
 
 def _field_target_cols(fspec, record: RecordTarget, span_to_idx):
     ft = record.field_for_query(fspec.query_id)
+    has_gold = bool(ft is not None and any(ft.values))
     if fspec.cardinality.is_scalar:
         return (
             _resolve_value_cols(ft.values[0], span_to_idx)
             if ft is not None and ft.values else [],
             True,
+            has_gold,
         )
     cols = []
     if ft is not None:
         for value in ft.values:
             cols.extend(_resolve_value_cols(value, span_to_idx))
-    return cols, False
+    return cols, False, has_gold
 
 
 def _instance_field_loss(group, inst: int, record: RecordTarget, span_indices) -> torch.Tensor:
     total = group.object_logits.new_zeros(())
     n_fields = 0
     for f_idx, fspec in enumerate(group.field_specs):
-        cols, is_scalar = _field_target_cols(fspec, record, span_indices[f_idx])
+        cols, is_scalar, has_gold = _field_target_cols(fspec, record, span_indices[f_idx])
+        if has_gold and not cols:
+            # Non-empty gold whose span missed the candidate pool: withhold
+            # rather than supervising ABSENT / empty.
+            continue
         row = group.assign_logits[f_idx][inst]
         total = total + (
             _scalar_field_nll(row, cols)
@@ -1061,7 +1073,9 @@ def _instance_field_loss(group, inst: int, record: RecordTarget, span_indices) -
 def _instance_field_logprob(group, inst: int, record: RecordTarget, span_indices) -> torch.Tensor:
     total = group.object_logits.new_zeros(())
     for f_idx, fspec in enumerate(group.field_specs):
-        cols, is_scalar = _field_target_cols(fspec, record, span_indices[f_idx])
+        cols, is_scalar, has_gold = _field_target_cols(fspec, record, span_indices[f_idx])
+        if has_gold and not cols:
+            continue
         row = group.assign_logits[f_idx][inst]
         if is_scalar:
             total = total - _scalar_field_nll(row, cols)
@@ -1280,6 +1294,7 @@ def compute_dense_batch_loss(
     output: DenseRecordBatchOutput,
     gold_indicator: torch.BoolTensor,
     record_mask: torch.BoolTensor,
+    has_gold: Optional[torch.BoolTensor] = None,
 ) -> Dict[str, torch.Tensor]:
     """Vectorized record loss; only Hungarian assignment remains per group."""
     device = output.object_logits.device
@@ -1304,30 +1319,48 @@ def compute_dense_batch_loss(
         -1,
     )
     candidates = output.assign_logits[..., 1:]
-    list_nll = F.binary_cross_entropy_with_logits(
-        candidates.unsqueeze(3).expand(
-            *candidates.shape[:3],
-            gold_indicator.shape[2],
-            candidates.shape[3],
-            candidates.shape[4],
-        ),
-        gold_indicator.unsqueeze(2).expand(
-            *gold_indicator.shape[:2],
-            output.object_logits.shape[2],
-            gold_indicator.shape[2],
-            gold_indicator.shape[3],
-            gold_indicator.shape[4],
-        ).to(candidates.dtype),
-        reduction="none",
-    ).mean(-1)
+    membership = output.field_membership
+    if membership.shape[-1] > n_cands_logits:
+        membership = membership[..., :n_cands_logits]
+    elif membership.shape[-1] < n_cands_logits:
+        mpad = membership.new_zeros(*membership.shape[:-1], n_cands_logits - membership.shape[-1])
+        membership = torch.cat([membership, mpad], dim=-1)
+    cand_exp = candidates.unsqueeze(3).expand(
+        *candidates.shape[:3],
+        gold_indicator.shape[2],
+        candidates.shape[3],
+        candidates.shape[4],
+    )
+    gold_exp = gold_indicator.unsqueeze(2).expand(
+        *gold_indicator.shape[:2],
+        output.object_logits.shape[2],
+        gold_indicator.shape[2],
+        gold_indicator.shape[3],
+        gold_indicator.shape[4],
+    )
+    mem_exp = membership[:, :, None, None, :, :].expand_as(gold_exp)
+    raw_bce = F.binary_cross_entropy_with_logits(
+        cand_exp, gold_exp.to(candidates.dtype), reduction="none"
+    )
+    pos_m = gold_exp & mem_exp
+    neg_m = (~gold_exp) & mem_exp
+    pos_cnt = pos_m.sum(-1)
+    neg_cnt = neg_m.sum(-1)
+    pos_mean = (raw_bce * pos_m.to(raw_bce.dtype)).sum(-1) / pos_cnt.clamp_min(1)
+    neg_mean = (raw_bce * neg_m.to(raw_bce.dtype)).sum(-1) / neg_cnt.clamp_min(1)
+    list_nll = torch.where(pos_cnt > 0, pos_mean + neg_mean, neg_mean)
     field_nll = torch.where(
         output.scalar_fields[:, :, None, None, :],
         scalar_nll,
         list_nll,
     )
+    active_fields = output.field_mask[:, :, None, None, :].expand_as(field_nll)
+    if has_gold is not None:
+        unresolved = has_gold.to(device) & (~present)
+        active_fields = active_fields & (~unresolved[:, :, None, :, :])
     field_nll = (
-        field_nll * output.field_mask[:, :, None, None, :].to(field_nll.dtype)
-    ).sum(-1) / output.field_mask.sum(-1)[:, :, None, None].clamp_min(1)
+        field_nll * active_fields.to(field_nll.dtype)
+    ).sum(-1) / active_fields.sum(-1).clamp_min(1)
 
     with torch.no_grad():
         cost = build_dense_record_matching_cost(
