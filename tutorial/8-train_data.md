@@ -624,7 +624,7 @@ This format will fail validation. Each example must contain at least one annotat
 8. **Mix task types** to train multi-task capabilities
 9. **Use consistent formatting** for similar examples
 10. **Include special characters** to ensure robust handling
-11. **Validate your dataset** using `TrainingDataset.validate(strict=True)` to catch annotation errors early
+11. **Validate your dataset** using `TrainingDataset.validate()` to catch annotation errors early
 12. **Check relation consistency** using `validate_relation_consistency()` to ensure all relation types have consistent field structures
 
 ## Validation Checklist
@@ -634,7 +634,7 @@ Make sure your JSONL file is valid by checking:
 - [ ] Required fields (`input`/`output` or `text`/`schema`) are present
 - [ ] **At least one task is present** (entities, classifications, structures, or relations)
 - [ ] Schema structure matches the expected format
-- [ ] Entity spans exist in the input text (entities can be found in the input) - checked in strict validation mode
+- [ ] Entity spans exist in the input text (entities can be found in the input) - checked by `validate()`
 - [ ] Classification labels are from the defined label set
 - [ ] `true_label` is a list or string (string format is converted to list internally)
 - [ ] For multi-label classification, `multi_label` is set to `true` when multiple labels are provided
@@ -644,11 +644,8 @@ Make sure your JSONL file is valid by checking:
 - [ ] Special characters are properly escaped
 - [ ] File encoding is UTF-8
 
-### Validation Modes
+### Validation
 
-The implementation supports two validation modes:
+`TrainingDataset.validate()` checks format correctness, required fields, and label consistency. It also checks that entity mentions and relation values exist in the input text (case-insensitive substring matching).
 
-- **Standard validation**: Checks format correctness, required fields, label consistency
-- **Strict validation**: Additionally checks that entity mentions and relation values exist in the input text (case-insensitive substring matching)
-
-Use strict validation during dataset creation to catch annotation errors early.
+Run it during dataset creation to catch annotation errors early.
