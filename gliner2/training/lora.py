@@ -56,6 +56,25 @@ def _deprecation(name: str, replacement: str) -> None:
     )
 
 
+def save_adapter_checkpoint(model: nn.Module, directory: Union[str, Path]) -> None:
+    """Save PEFT adapter weights alongside the extractor ``config.json``."""
+    if not isinstance(model, PeftModel):
+        raise TypeError(
+            f"save_adapter_checkpoint requires a PeftModel, got {type(model).__name__}"
+        )
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(str(out))
+    base = model.get_base_model()
+    cfg = getattr(base, "config", None)
+    if cfg is not None and hasattr(cfg, "save_pretrained"):
+        from gliner2.configuration import architecture_from_config
+
+        cfg.architecture = architecture_from_config(cfg)
+        cfg.architectures = [type(base).__name__]
+        cfg.save_pretrained(str(out))
+
+
 def _cast_lora_dtype(model: nn.Module) -> None:
     """Cast LoRA A/B weights to match their base-layer dtype (PR #4 fix)."""
     for mod in model.modules():
