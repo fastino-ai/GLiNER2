@@ -910,3 +910,31 @@ class TestFindUnalignableEntities:
             text, {"status": "[selection]anything"}
         )
         assert result == []
+
+    def test_partial_word_surface_span_is_skipped_while_max_len_cut_is_kept(self, processor):
+        from gliner2.processing.targets import SurfaceSpan
+
+        processor.is_training = True
+        rec = processor.transform_and_format(
+            "TexasA visited Austin today.",
+            {
+                "entities": {
+                    "Location": [
+                        SurfaceSpan("Texas", 0, 5),
+                        SurfaceSpan("Austin", 15, 21),
+                    ]
+                }
+            },
+            build_targets=True,
+        )
+        assert rec.structure_labels == [[1, [[[(-1, -1), (2, 2)]]]]]
+
+        rec_cut = processor._transform_record(
+            {
+                "text": "Visited New York City yesterday.",
+                "schema": {"entities": {"Location": [SurfaceSpan("New York City", 8, 21)]}},
+            },
+            max_len=3,
+            build_targets=True,
+        )
+        assert rec_cut.structure_labels == [[1, [[[(1, 2)]]]]]
