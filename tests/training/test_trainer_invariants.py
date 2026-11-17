@@ -105,3 +105,30 @@ def test_debug_batch_records_complete_preprocessed_state(tmp_path):
         "values": [[1, 2, 3]],
     }
     assert record["batch"]["original_texts"] == ["Alice works at Acme."]
+
+
+def test_boundary_head_encoders_receive_task_lr(tmp_path):
+    from tests.fixtures.tiny_boundary_checkpoint import build_tiny_boundary_model
+
+    model = build_tiny_boundary_model()
+    config = TrainingConfig(
+        output_dir=str(tmp_path / "out"),
+        encoder_lr=1e-5,
+        task_lr=5e-4,
+        num_workers=0,
+        fp16=False,
+        bf16=False,
+    )
+    trainer = ExtractorTrainer(model=model, config=config)
+    optimizer = trainer._create_optimizer()
+
+    id_to_name = {id(p): name for name, p in model.named_parameters()}
+    enc_names = [id_to_name[id(p)] for p in optimizer.param_groups[0]["params"]]
+    task_names = [id_to_name[id(p)] for p in optimizer.param_groups[1]["params"]]
+
+    assert enc_names and all(n.startswith("encoder.") for n in enc_names)
+    head_encoders = [
+        n for n in task_names
+        if n.startswith("boundary_head.boundary_encoder.") or n.startswith("boundary_head.candidate_encoder.")
+    ]
+    assert head_encoders, "expected boundary_encoder and candidate_encoder parameters in task_lr group"
