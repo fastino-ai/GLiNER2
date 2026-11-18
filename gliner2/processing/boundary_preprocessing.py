@@ -115,7 +115,11 @@ def _unalignable_entity_error(
         "token, so a standalone-token search for a sub-part of that run (e.g. 'abs') "
         "finds nothing even though it is a literal substring. Call "
         "SchemaTransformer.find_unalignable_entities(text, entities) on this "
-        "(text, schema) example before training to check alignment ahead of time."
+        "(text, schema) example before training to check alignment ahead of time. "
+        "For Chinese, Japanese or Korean text, where the whitespace splitter treats "
+        "a whole run of characters as one token, call "
+        "model.set_word_splitter(\"char\") (or load with word_splitter=\"char\") "
+        "before training."
     )
     return ValueError(" ".join(detail))
 

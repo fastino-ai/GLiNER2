@@ -1162,6 +1162,23 @@ def build_dense_record_cost(
     )
 
 
+def _member_mean(nll: torch.Tensor, membership: torch.Tensor) -> torch.Tensor:
+    """Average per-candidate BCE over each field's real candidates only.
+
+    ``nll`` ends in ``[..., F, C]``; ``membership`` is ``[..., F, C]`` and is
+    broadcast from the left by the caller. Averaging over the padded pool
+    width instead would scale the list term by ``n_real / n_padded``.
+    """
+    width = nll.shape[-1]
+    if membership.shape[-1] > width:
+        membership = membership[..., :width]
+    elif membership.shape[-1] < width:
+        pad = membership.new_zeros(*membership.shape[:-1], width - membership.shape[-1])
+        membership = torch.cat([membership, pad], dim=-1)
+    keep = membership.to(nll.dtype)
+    return (nll * keep).sum(-1) / keep.sum(-1).clamp_min(1)
+
+
 def compute_dense_group_loss(
     group: DenseRecordGroupOutput,
     records: Sequence[RecordTarget],
@@ -1218,11 +1235,14 @@ def compute_dense_group_loss(
     scalar_nll = -torch.logsumexp(
         logp[:, None].masked_fill(~target[None], MASK_LOGIT), -1
     )
-    list_nll = F.binary_cross_entropy_with_logits(
-        group.assign_logits[:, None, :, 1:].expand(-1, count, -1, -1),
-        gold[None].expand(ni, -1, -1, -1).to(group.object_logits.dtype),
-        reduction="none",
-    ).mean(-1)
+    list_nll = _member_mean(
+        F.binary_cross_entropy_with_logits(
+            group.assign_logits[:, None, :, 1:].expand(-1, count, -1, -1),
+            gold[None].expand(ni, -1, -1, -1).to(group.object_logits.dtype),
+            reduction="none",
+        ),
+        group.field_membership.to(device),
+    )
     field_nll = torch.where(
         scalar[None, None], scalar_nll, list_nll
     ).mean(-1)
@@ -1304,7 +1324,7 @@ def compute_dense_batch_loss(
         -1,
     )
     candidates = output.assign_logits[..., 1:]
-    list_nll = F.binary_cross_entropy_with_logits(
+    list_bce = F.binary_cross_entropy_with_logits(
         candidates.unsqueeze(3).expand(
             *candidates.shape[:3],
             gold_indicator.shape[2],
@@ -1319,7 +1339,10 @@ def compute_dense_batch_loss(
             gold_indicator.shape[4],
         ).to(candidates.dtype),
         reduction="none",
-    ).mean(-1)
+    )
+    list_nll = _member_mean(
+        list_bce, output.field_membership.to(device)[:, :, None, None]
+    )
     field_nll = torch.where(
         output.scalar_fields[:, :, None, None, :],
         scalar_nll,

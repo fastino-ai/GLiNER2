@@ -97,6 +97,7 @@ def test_error_message_includes_batch_relative_caveat():
     assert "'PartCode' was not found in sample 3" in msg
     assert "batch-relative" in msg
     assert "find_unalignable_entities" in msg
+    assert 'set_word_splitter("char")' in msg
 
 
 def test_error_message_includes_literal_values_and_snippet_when_available():
