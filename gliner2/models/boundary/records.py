@@ -1176,6 +1176,23 @@ def build_dense_record_cost(
     )
 
 
+def _member_mean(nll: torch.Tensor, membership: torch.Tensor) -> torch.Tensor:
+    """Average per-candidate BCE over each field's real candidates only.
+
+    ``nll`` ends in ``[..., F, C]``; ``membership`` is ``[..., F, C]`` and is
+    broadcast from the left by the caller. Averaging over the padded pool
+    width instead would scale the list term by ``n_real / n_padded``.
+    """
+    width = nll.shape[-1]
+    if membership.shape[-1] > width:
+        membership = membership[..., :width]
+    elif membership.shape[-1] < width:
+        pad = membership.new_zeros(*membership.shape[:-1], width - membership.shape[-1])
+        membership = torch.cat([membership, pad], dim=-1)
+    keep = membership.to(nll.dtype)
+    return (nll * keep).sum(-1) / keep.sum(-1).clamp_min(1)
+
+
 def compute_dense_group_loss(
     group: DenseRecordGroupOutput,
     records: Sequence[RecordTarget],
@@ -1232,11 +1249,14 @@ def compute_dense_group_loss(
     scalar_nll = -torch.logsumexp(
         logp[:, None].masked_fill(~target[None], MASK_LOGIT), -1
     )
-    list_nll = F.binary_cross_entropy_with_logits(
-        group.assign_logits[:, None, :, 1:].expand(-1, count, -1, -1),
-        gold[None].expand(ni, -1, -1, -1).to(group.object_logits.dtype),
-        reduction="none",
-    ).mean(-1)
+    list_nll = _member_mean(
+        F.binary_cross_entropy_with_logits(
+            group.assign_logits[:, None, :, 1:].expand(-1, count, -1, -1),
+            gold[None].expand(ni, -1, -1, -1).to(group.object_logits.dtype),
+            reduction="none",
+        ),
+        group.field_membership.to(device),
+    )
     field_nll = torch.where(
         scalar[None, None], scalar_nll, list_nll
     ).mean(-1)
@@ -1295,6 +1315,8 @@ def compute_dense_batch_loss(
     gold_indicator: torch.BoolTensor,
     record_mask: torch.BoolTensor,
     has_gold: Optional[torch.BoolTensor] = None,
+    *,
+    split_positive_negative: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """Vectorized record loss; only Hungarian assignment remains per group."""
     device = output.object_logits.device
@@ -1319,12 +1341,6 @@ def compute_dense_batch_loss(
         -1,
     )
     candidates = output.assign_logits[..., 1:]
-    membership = output.field_membership
-    if membership.shape[-1] > n_cands_logits:
-        membership = membership[..., :n_cands_logits]
-    elif membership.shape[-1] < n_cands_logits:
-        mpad = membership.new_zeros(*membership.shape[:-1], n_cands_logits - membership.shape[-1])
-        membership = torch.cat([membership, mpad], dim=-1)
     cand_exp = candidates.unsqueeze(3).expand(
         *candidates.shape[:3],
         gold_indicator.shape[2],
@@ -1338,17 +1354,28 @@ def compute_dense_batch_loss(
         gold_indicator.shape[3],
         gold_indicator.shape[4],
     )
-    mem_exp = membership[:, :, None, None, :, :].expand_as(gold_exp)
-    raw_bce = F.binary_cross_entropy_with_logits(
+    list_bce = F.binary_cross_entropy_with_logits(
         cand_exp, gold_exp.to(candidates.dtype), reduction="none"
     )
-    pos_m = gold_exp & mem_exp
-    neg_m = (~gold_exp) & mem_exp
-    pos_cnt = pos_m.sum(-1)
-    neg_cnt = neg_m.sum(-1)
-    pos_mean = (raw_bce * pos_m.to(raw_bce.dtype)).sum(-1) / pos_cnt.clamp_min(1)
-    neg_mean = (raw_bce * neg_m.to(raw_bce.dtype)).sum(-1) / neg_cnt.clamp_min(1)
-    list_nll = torch.where(pos_cnt > 0, pos_mean + neg_mean, neg_mean)
+    if split_positive_negative:
+        membership = output.field_membership.to(device)
+        if membership.shape[-1] > n_cands_logits:
+            membership = membership[..., :n_cands_logits]
+        elif membership.shape[-1] < n_cands_logits:
+            mpad = membership.new_zeros(*membership.shape[:-1], n_cands_logits - membership.shape[-1])
+            membership = torch.cat([membership, mpad], dim=-1)
+        mem_exp = membership[:, :, None, None, :, :].expand_as(gold_exp)
+        pos_m = gold_exp & mem_exp
+        neg_m = (~gold_exp) & mem_exp
+        pos_cnt = pos_m.sum(-1)
+        neg_cnt = neg_m.sum(-1)
+        pos_mean = (list_bce * pos_m.to(list_bce.dtype)).sum(-1) / pos_cnt.clamp_min(1)
+        neg_mean = (list_bce * neg_m.to(list_bce.dtype)).sum(-1) / neg_cnt.clamp_min(1)
+        list_nll = torch.where(pos_cnt > 0, pos_mean + neg_mean, neg_mean)
+    else:
+        list_nll = _member_mean(
+            list_bce, output.field_membership.to(device)[:, :, None, None]
+        )
     field_nll = torch.where(
         output.scalar_fields[:, :, None, None, :],
         scalar_nll,

@@ -114,7 +114,7 @@ train_examples = [
 
 # Step 2: Create and validate dataset
 train_dataset = TrainingDataset(train_examples)
-train_dataset.validate(strict=True, raise_on_error=True)
+train_dataset.validate(raise_on_error=True)
 train_dataset.print_stats()
 
 # Step 3: Split into train/validation
@@ -430,15 +430,15 @@ example = InputExample(
 ### Data Validation
 
 ```python
-from gliner2.training.data import TrainingDataset
+from gliner2.training.data import DataValidationError, TrainingDataset
 
 # Load and validate dataset
 dataset = TrainingDataset.load("train.jsonl")
 
-# Strict validation (checks entity spans exist in text)
+# Validation is always strict (checks entity spans exist in text)
 try:
-    dataset.validate(strict=True, raise_on_error=True)
-except ValidationError as e:
+    dataset.validate(raise_on_error=True)
+except DataValidationError as e:
     print(f"Validation failed: {e}")
 
 # Get validation report
@@ -699,7 +699,6 @@ config = TrainingConfig(
     max_train_samples=-1,
     max_eval_samples=-1,
     validate_data=True,
-    strict_validation=False,
     
     # LoRA (see LoRA section)
     use_lora=False,
@@ -1202,8 +1201,8 @@ example = InputExample(
     entities={}  # OK if other tasks present
 )
 
-# 3. Use loose validation during development
-dataset.validate(strict=False, raise_on_error=False)
+# 3. Get a report instead of an exception while you fix the data
+report = dataset.validate(raise_on_error=False)
 ```
 
 ### Model Not Learning

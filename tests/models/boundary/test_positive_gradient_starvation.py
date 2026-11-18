@@ -80,7 +80,9 @@ def test_dense_batch_loss_splits_list_bce_and_withholds_unresolved_fields():
     has_gold = torch.tensor([[[[True, True]]]])
     record_mask = torch.ones(1, 1, 1, dtype=torch.bool)
 
-    losses = compute_dense_batch_loss(dense, gold_indicator, record_mask, has_gold=has_gold)
+    losses = compute_dense_batch_loss(
+        dense, gold_indicator, record_mask, has_gold=has_gold, split_positive_negative=True
+    )
     losses["field_loss"].backward()
     # Unresolved field 1 must receive zero gradient on ABSENT (col 0)
     assert assign.grad[0, 0, 0, 1, 0].item() == 0.0

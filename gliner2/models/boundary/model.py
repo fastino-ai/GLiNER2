@@ -2025,7 +2025,11 @@ class BoundaryExtractorModel(BaseExtractorModel):
             gold_indicator &= dense.field_membership.unsqueeze(2)
             try:
                 losses = compute_dense_batch_loss(
-                    dense, gold_indicator, record_mask, has_gold=packed_mask.any(-1)
+                    dense,
+                    gold_indicator,
+                    record_mask,
+                    has_gold=packed_mask.any(-1),
+                    split_positive_negative=self.boundary_settings.pair_split_reduction,
                 )
             except TargetCapacityError:
                 return {
