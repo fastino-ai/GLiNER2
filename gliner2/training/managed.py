@@ -21,6 +21,7 @@ from typing import Callable, Protocol
 
 from gliner2.training.config import TrainingConfig
 from gliner2.training.data import InputExample
+from gliner2.training.row_order import ConsumedRowOrder
 
 
 def _length_grouped_order(lengths: list[int], batch_size: int, window_batches: int, seed: int) -> list[int]:
@@ -110,6 +111,10 @@ class ManagedTrainingPlan:
                 or self.is_epoch_end(index) or index + 1 == self.batch_count)
 
     def batch(self, index: int) -> list[InputExample]:
+        return copy.deepcopy([self._examples[i] for i in self.batch_indices(index)])
+
+    def batch_indices(self, index: int) -> tuple[int, ...]:
+        """Return private ordinals for the exact batch selected by this plan."""
         epoch = self.epoch(index)
         if self._cached_epoch != epoch:
             if self.shuffle and self.architecture == "boundary" and self.config.group_by_length:
@@ -122,7 +127,7 @@ class ManagedTrainingPlan:
                     random.Random(self.config.seed + epoch).shuffle(self._order)
             self._cached_epoch = epoch
         start = (index % self.batches_per_epoch) * self.config.batch_size
-        return copy.deepcopy([self._examples[i] for i in self._order[start:start + self.config.batch_size]])
+        return tuple(self._order[start:start + self.config.batch_size])
 
 
     def to_manifest(self, *, eval_examples: list[InputExample] | None = None) -> dict:
@@ -169,7 +174,8 @@ class ManagedTraining:
     """
 
     def __init__(self, session: SessionOperations, plan: ManagedTrainingPlan, *,
-                 eval_examples: list[InputExample] | None = None, keep_best: bool | None = None):
+                 eval_examples: list[InputExample] | None = None, keep_best: bool | None = None,
+                 row_order_attempt_id: str | None = None):
         if session.step or session.pending_batches:
             raise ValueError("managed driver requires a fresh session or load_state")
         if session.max_steps != plan.max_steps:
@@ -204,6 +210,10 @@ class ManagedTraining:
         self._failed = False
         self._started = time.monotonic()
         self._previous_elapsed = 0.0
+        self._row_order_receipt = (
+            ConsumedRowOrder(attempt_id=row_order_attempt_id, seed=plan.config.seed, shuffle=plan.shuffle)
+            if row_order_attempt_id is not None else None
+        )
 
     @property
     def complete(self) -> bool:
@@ -239,6 +249,10 @@ class ManagedTraining:
         update = self.plan.is_update(index)
         if update:
             self.session.optim_step()
+        if self._row_order_receipt is not None:
+            self._row_order_receipt.observe(
+                epoch=self.plan.epoch(index), ordinals=self.plan.batch_indices(index)
+            )
         self._loss_sum += metrics["loss"] * len(batch)
         self._samples += len(batch)
         self.cursor += 1
@@ -284,13 +298,16 @@ class ManagedTraining:
             if on_step is not None and metrics["optimizer_update"]:
                 on_step(self.session.step, metrics)
         elapsed = self._previous_elapsed + time.monotonic() - self._started
-        return {"total_steps": self.session.step,
+        result = {"total_steps": self.session.step,
                 "total_epochs": math.ceil(self.cursor / self.plan.batches_per_epoch),
                 "total_time_seconds": elapsed, "samples_per_second": self._samples / max(elapsed, 1e-9),
                 "best_metric": self.best_metric if self.best_metric is not None else float("nan"),
                 "train_metrics_history": self.train_history, "eval_metrics_history": self.eval_history,
                 "selected_step": self.best_step if self.keep_best and self.best_step is not None else self.session.step,
                 "samples_seen": self._samples, "train_loss": self._loss_sum / self._samples}
+        if self._row_order_receipt is not None:
+            result["consumed_row_order"] = self._row_order_receipt.receipt()
+        return result
 
     def save_state(self, directory: str | Path) -> None:
         """Atomically publish an immutable checkpoint including the data cursor."""
@@ -320,6 +337,8 @@ class ManagedTraining:
                 shutil.rmtree(staging)
 
     def load_state(self, directory: str | Path) -> None:
+        if self._row_order_receipt is not None:
+            raise ValueError("row-order receipt cannot resume without prior consumed-order state")
         if self.cursor:
             raise ValueError("managed restore requires a fresh driver")
         path = Path(directory)

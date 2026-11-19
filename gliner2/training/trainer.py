@@ -76,6 +76,7 @@ from gliner2.training.sampler import (
     DistributedLengthGroupedSampler,
     LengthGroupedSampler,
 )
+from gliner2.training.row_order import ConsumedRowOrder
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ class ExtractorDataset(Dataset):
             validate=validate,
         )
         self.lengths = self._load_or_compute_lengths(data)
+        self.track_row_ordinals = False
 
     @staticmethod
     def _record_text(record: Dict[str, Any]) -> str:
@@ -210,9 +212,10 @@ class ExtractorDataset(Dataset):
         record = self.data[idx]
         # Handle both formats
         if "input" in record:
-            return record["input"], record["output"]
+            pair = (record["input"], record["output"])
         else:
-            return record["text"], record["schema"]
+            pair = (record["text"], record["schema"])
+        return (*pair, idx) if self.track_row_ordinals else pair
 
     # Factory methods for explicit creation
     @classmethod
@@ -251,6 +254,7 @@ class ExtractorCollator:
             on_capacity_exceeded: str = "raise",
             allow_invalid_samples: bool = False,
             dedupe_contained_entity_spans: bool = True,
+            track_row_ordinals: bool = False,
     ):
         self.processor = processor
         self.is_training = is_training
@@ -269,6 +273,7 @@ class ExtractorCollator:
         # gliner2.processing.boundary_preprocessing._dedupe_contained_spans);
         # defaults to the corrected behavior.
         self.dedupe_contained_entity_spans = dedupe_contained_entity_spans
+        self.track_row_ordinals = track_row_ordinals
 
     def __call__(self, batch: List[Tuple[str, Dict]]):
         """
@@ -280,6 +285,10 @@ class ExtractorCollator:
         Returns:
             PreprocessedBatch ready for model.forward()
         """
+        ordinals = None
+        if self.track_row_ordinals:
+            ordinals = tuple(item[2] for item in batch)
+            batch = [(item[0], item[1]) for item in batch]
         if self.is_training:
             kwargs = dict(
                 max_len=self.max_len, architecture=self.architecture,
@@ -292,7 +301,12 @@ class ExtractorCollator:
                     error_policy="skip",
                     ignore_missing_entities=True,
                 )
-            return self.processor.collate_fn_train(batch, **kwargs)
+            processed = self.processor.collate_fn_train(batch, **kwargs)
+            if ordinals is not None:
+                if len(processed) != len(ordinals):
+                    raise ValueError("row-order receipt cannot attest skipped training rows")
+                processed._source_ordinals = ordinals
+            return processed
         else:
             kwargs = dict(
                 max_len=self.max_len, architecture=self.architecture,
@@ -434,6 +448,7 @@ class ExtractorTrainer:
     ):
         self.model = model
         self.config = config
+        self._row_order_receipt: ConsumedRowOrder | None = None
         if config.bf16 and not torch.cuda.is_bf16_supported():
             raise RuntimeError("bf16 was requested but this CUDA device does not support it")
         if (
@@ -1244,6 +1259,11 @@ class ExtractorTrainer:
         return metrics
 
     def _create_dataloader(self, dataset: ExtractorDataset, batch_size: int, shuffle: bool = True, is_training: bool = True) -> DataLoader:
+        track_row_ordinals = is_training and self._row_order_receipt is not None
+        if track_row_ordinals:
+            if not isinstance(dataset, ExtractorDataset):
+                raise ValueError("row-order receipt requires an ExtractorDataset")
+            dataset.track_row_ordinals = True
         sampler = None
         base_model = (
             self.model.module
@@ -1292,6 +1312,7 @@ class ExtractorTrainer:
             on_capacity_exceeded=self.config.on_capacity_exceeded,
             allow_invalid_samples=self.config.allow_invalid_samples,
             dedupe_contained_entity_spans=self.config.dedupe_contained_entity_spans,
+            track_row_ordinals=track_row_ordinals,
         )
 
         # Fix Bug #1 & #9: Handle small datasets
@@ -1324,6 +1345,8 @@ class ExtractorTrainer:
             self,
             train_data: TrainDataInput = None,
             eval_data: TrainDataInput = None,
+            *,
+            row_order_attempt_id: str | None = None,
     ) -> Dict[str, Any]:
         """
         Main training loop.
@@ -1353,6 +1376,12 @@ class ExtractorTrainer:
         if train_data is None:
             raise ValueError("No training data provided")
 
+        if row_order_attempt_id is not None and self.is_distributed:
+            raise ValueError("global row-order receipt is unavailable for distributed training")
+        self._row_order_receipt = (
+            ConsumedRowOrder(attempt_id=row_order_attempt_id, seed=self.config.seed, shuffle=True)
+            if row_order_attempt_id is not None else None
+        )
         train_dataset = self._prepare_data(train_data, is_train=True)
         eval_dataset = self._prepare_data(eval_data, is_train=False) if eval_data else None
 
@@ -1563,6 +1592,11 @@ class ExtractorTrainer:
                     continue
 
                 tr_loss += micro_loss
+                if self._row_order_receipt is not None:
+                    ordinals = getattr(batch, "_source_ordinals", None)
+                    if not isinstance(ordinals, tuple) or len(ordinals) != len(batch):
+                        raise ValueError("training batch has no exact consumed row ordinals")
+                    self._row_order_receipt.observe(epoch=epoch, ordinals=ordinals)
                 epoch_loss += micro_loss
                 epoch_steps += 1
                 micro += 1
@@ -1678,7 +1712,7 @@ class ExtractorTrainer:
 
         self._cleanup_distributed()
 
-        return {
+        result = {
             "total_steps": self.global_step,
             "total_epochs": self.epoch + 1,
             "total_time_seconds": total_time,
@@ -1687,6 +1721,9 @@ class ExtractorTrainer:
             "train_metrics_history": self.train_metrics_history,
             "eval_metrics_history": self.eval_metrics_history,
         }
+        if self._row_order_receipt is not None:
+            result["consumed_row_order"] = self._row_order_receipt.receipt()
+        return result
 
     def _evaluate(self, eval_dataset: ExtractorDataset) -> Dict[str, float]:
         logger.info("Running evaluation...")
