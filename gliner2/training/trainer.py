@@ -1127,13 +1127,17 @@ class ExtractorTrainer:
                 [{"params": lora_params, "lr": self.config.task_lr, "weight_decay": self.config.weight_decay}],
                 **optimizer_kwargs,
             )
-        # Normal training: separate LRs for encoder and task-specific layers.
+        # Normal training: separate LRs for the pretrained backbone (``encoder.*``)
+        # and task-specific heads (including ``boundary_head.boundary_encoder`` and
+        # ``boundary_head.candidate_encoder``, which are randomly initialized task
+        # head layers and must train at ``task_lr``, not ``encoder_lr``).
         encoder_params = []
         task_params = []
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            if "encoder" in name:
+            clean = name[len("module."):] if name.startswith("module.") else name
+            if clean == "encoder" or clean.startswith("encoder."):
                 encoder_params.append(param)
             else:
                 task_params.append(param)
