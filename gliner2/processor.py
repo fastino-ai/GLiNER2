@@ -1430,6 +1430,15 @@ class SchemaTransformer:
         token_start, token_end = char_span_to_word_boundaries(
             value.start, value.end, ctx.start_idx_map, ctx.end_idx_map
         )
+        # Require exact word-boundary alignment so a partial-word span (e.g.
+        # "Texas" inside "TexasA") is skipped instead of widened onto the full
+        # token. If max_len drops whole trailing tokens, keep a span that starts
+        # on a word boundary and runs past the truncation cut.
+        start_exact = ctx.start_idx_map[token_start] == value.start
+        end_exact = ctx.end_idx_map[token_end - 1] == value.end
+        cut = ctx.char_limit is not None and value.end > ctx.char_limit
+        if not start_exact or not (end_exact or cut):
+            return (-1, -1)
         # mirrors word_offsets on the decode side: maps are unprefixed, tokens are not
         return token_start + ctx.len_prefix, token_end - 1 + ctx.len_prefix
 
