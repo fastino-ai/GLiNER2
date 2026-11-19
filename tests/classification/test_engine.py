@@ -218,3 +218,41 @@ def test_only_one_config_class_in_module():
         names.extend(node.name for node in ast.walk(tree)
                      if isinstance(node, ast.ClassDef) and node.name.endswith("Config"))
     assert names == ["ClassificationConfig"]
+
+
+# ---- T-E9 : ClassificationConfig.calibrator is applied ------------------
+
+def test_calibrator_is_applied_at_decode(planted):
+    from gliner2.joint_ie.calibration import Calibrator, IdentityCalibrator
+
+    class Negate(Calibrator):
+        def calibrate(self, logits):
+            return -logits
+
+    clf = Classifier(planted(TASKS, LOGITS))
+    base = clf.classify("x", _schema())
+    identity = clf.classify("x", _schema(),
+                            config=ClassificationConfig(calibrator=IdentityCalibrator()))
+    negated = clf.classify("x", _schema(),
+                           config=ClassificationConfig(calibrator=Negate()))
+
+    assert identity.to_dict() == base.to_dict()
+    assert base.value("sentiment") == "pos"
+    assert negated.value("sentiment") == "neg"
+    assert negated.tasks["sentiment"].probabilities["neg"] > base.tasks["sentiment"].probabilities["neg"]
+
+
+def test_calibrator_applies_to_batch_and_long(planted):
+    from gliner2.joint_ie.calibration import TemperatureCalibrator
+
+    clf = Classifier(planted(TASKS, LOGITS))
+    cfg = ClassificationConfig(calibrator=TemperatureCalibrator(2.0))
+    plain = clf.classify("x", _schema())
+    single = clf.classify("x", _schema(), config=cfg)
+    batched = clf.batch_classify(["x"], _schema(), config=cfg)[0]
+    long = clf.classify_long("x", _schema(), config=cfg)
+
+    p = plain.tasks["sentiment"].probabilities["pos"]
+    assert single.tasks["sentiment"].probabilities["pos"] < p  # flatter after T=2
+    assert batched.to_dict() == single.to_dict()
+    assert long.to_dict() == single.to_dict()
