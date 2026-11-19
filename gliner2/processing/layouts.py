@@ -9,10 +9,12 @@ single query addressing scheme.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, List, Mapping, Optional
 
-from gliner2.models.base import QueryLayout, QuerySpec
 from gliner2.processing.targets import TargetGraph
+
+if TYPE_CHECKING:
+    from gliner2.models.base import QueryLayout
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,8 @@ def build_query_layout(schema: Mapping[str, Any]) -> QueryLayout:
     Query ids are assigned in a stable order: entities, then json-structure
     fields, then classifications.
     """
+    from gliner2.models.base import QueryLayout, QuerySpec
+
     queries: List[QuerySpec] = []
     qid = 0
     task_index = 0
