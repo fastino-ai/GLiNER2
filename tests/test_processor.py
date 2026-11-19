@@ -548,14 +548,32 @@ class TestSchemaTransformerE2E:
         assert len(batch.text_tokens[0]) == 3
         assert batch.text_word_counts[0] == 3
 
-    def test_punctuation_appended(self, processor):
-        """Texts without trailing punctuation get a '.' appended."""
-        batch_data = [("hello world", {"entities": {"x": []}})]
-        processor.is_training = False
-        batch = processor.collate_fn_inference(batch_data)
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "John Smith lives in Manchester",
+            "",
+        ],
+    )
+    def test_offsets_stay_within_caller_text(self, processor, text):
+        schema = {"entities": {"person": []}}
+        record = processor.transform_record(text, schema)
+        assert record.text == text
+        assert all(
+            0 <= start <= end <= len(text)
+            for start, end in zip(
+                record.start_token_idx, record.end_token_idx, strict=True
+            )
+        )
 
-        # The original text stored should end with "."
-        assert batch.original_texts[0].endswith(".")
+    def test_punctuation_appended(self, processor):
+        """Texts without trailing punctuation still get a '.' for the splitter."""
+        schema = {"entities": {"token": []}}
+        bare = processor.transform_record("hello world", schema)
+        punctuated = processor.transform_record("hello world.", schema)
+        assert bare.text_tokens[-1] == "."
+        assert bare.text_tokens == punctuated.text_tokens
+        assert bare.input_ids == punctuated.input_ids
 
 
 # ===========================================================================
@@ -802,7 +820,10 @@ class TestTransformRecord:
         record = processor.transform_record(text, schema, max_len=3)
         assert len(record.text_tokens) == 3
 
-    @pytest.mark.parametrize("text", ["John Smith lives in New York City", "", "hello world!"])
+    @pytest.mark.parametrize(
+        "text",
+        ["John Smith lives in New York City", "", "hello world!"],
+    )
     def test_transform_record_matches_collate_fn_inference(self, processor, text):
         schema = {
             "entities": {"person": [], "location": []},
@@ -815,8 +836,44 @@ class TestTransformRecord:
         assert record.input_ids == batch.input_ids[0, : batch.original_lengths[0]].tolist()
         assert record.text == batch.original_texts[0]
         assert record.text_tokens == batch.text_tokens[0]
+        assert record.start_token_idx == batch.start_mappings[0]
+        assert record.end_token_idx == batch.end_mappings[0]
         assert record.schema_tokens_list == batch.schema_tokens_list[0]
         assert record.structure_labels == batch.structure_labels[0]
+
+    def test_end_of_text_gold_excludes_synthetic_period(self, processor_no_sampling):
+        text = "hello world"
+        schema = {
+            "entities": {
+                "token": [{"text": "world", "start": 6, "end": 11}],
+            }
+        }
+        record = processor_no_sampling.transform_record(text, schema, build_targets=True)
+        start_incl, end_incl = record.structure_labels[0][1][0][0][0]
+        assert record.text_tokens[start_incl : end_incl + 1] == ["world"]
+
+    def test_gold_span_past_caller_text_is_rejected(self, processor_no_sampling):
+        text = "hello world"
+        schema = {
+            "entities": {
+                "token": [{"text": "world", "start": 6, "end": 12}],
+            }
+        }
+        with pytest.raises(ValueError, match="outside text"):
+            processor_no_sampling.transform_record(text, schema, build_targets=True)
+
+    def test_fallback_keeps_caller_text(self, processor):
+        text = ""
+        batch = processor.collate_fn_inference(
+            [(text, {"entities": 12345})], error_policy="fallback"
+        )
+        assert batch.original_texts == [text]
+        assert all(
+            0 <= start <= end <= len(text)
+            for start, end in zip(
+                batch.start_mappings[0], batch.end_mappings[0], strict=True
+            )
+        )
 
 
 class TestTokenizationCache:
