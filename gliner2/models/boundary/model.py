@@ -873,6 +873,7 @@ class BoundaryHead(nn.Module):
             reduction=reduction,
             query_axis=query_axis,
             candidate_axis=candidate_axis,
+            split_positive_negative=self.settings.pair_split_reduction,
         )
         soft_iou_loss = loss_logits.new_zeros(())
         if soft_iou_targets is not None and self._soft_iou_scale > 0:
@@ -2024,7 +2025,11 @@ class BoundaryExtractorModel(BaseExtractorModel):
             gold_indicator &= dense.field_membership.unsqueeze(2)
             try:
                 losses = compute_dense_batch_loss(
-                    dense, gold_indicator, record_mask
+                    dense,
+                    gold_indicator,
+                    record_mask,
+                    has_gold=packed_mask.any(-1),
+                    split_positive_negative=self.boundary_settings.pair_split_reduction,
                 )
             except TargetCapacityError:
                 return {

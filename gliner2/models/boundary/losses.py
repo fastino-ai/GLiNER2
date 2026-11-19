@@ -227,8 +227,14 @@ def candidate_pair_loss(
     reduction: str = "global",
     query_axis: int = 1,
     candidate_axis: int = 2,
+    split_positive_negative: bool = False,
 ) -> torch.Tensor:
-    """BCE over candidates; optionally restrict negatives to a hard subset."""
+    """BCE over candidates; optionally restrict negatives to a hard subset.
+
+    When ``split_positive_negative=True``, positive candidates and selected
+    negative candidates are averaged over their own counts and summed so
+    positive gradients are not diluted by large negative/absent-query pools.
+    """
     logits = _to_query_candidate(logits, query_axis, candidate_axis)
     labels = _to_query_candidate(labels, query_axis, candidate_axis)
     valid_mask = _to_query_candidate(valid_mask, query_axis, candidate_axis)
@@ -241,6 +247,15 @@ def candidate_pair_loss(
     else:
         effective = valid_mask
     bce = _safe_bce(logits, labels, effective)
+    if split_positive_negative:
+        pos_mask = effective & (labels > 0.5)
+        neg_mask = effective & (labels <= 0.5)
+        loss = logits.new_zeros(())
+        if bool(pos_mask.any()):
+            loss = loss + _reduce(bce, pos_mask, query_mask, reduction)
+        if bool(neg_mask.any()):
+            loss = loss + _reduce(bce, neg_mask, query_mask, reduction)
+        return loss
     return _reduce(bce, effective, query_mask, reduction)
 
 
