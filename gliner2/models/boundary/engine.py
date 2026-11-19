@@ -620,7 +620,7 @@ class BoundaryExtractor(ExtractorRuntimeMixin, BoundaryExtractorModel):
                         continue
                     labels, rows = zip(*present)
                     values = logits[
-                        torch.tensor(rows, dtype=torch.long, device=device),
+                        torch.tensor(rows, dtype=torch.long, device=logits.device),
                         column,
                     ]
                     if group.multi_label:
