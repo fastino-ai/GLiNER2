@@ -25,7 +25,8 @@ def compile_schema(schema):
     eo=tuple(entities); ro=tuple(relations)
     model={"json_structures":[],"classifications":[],"entities":{n:"" for n in eo},
       "relations":[{n:{"head":"","tail":""}} for n in ro],"json_descriptions":{},
-      "entity_descriptions":{n:s.description for n,s in entities.items() if s.description is not None}}
+      "entity_descriptions":{n:s.description for n,s in entities.items() if s.description is not None},
+      "relation_descriptions":{n:s.description for n,s in relations.items() if s.description is not None}}
     constraints=list(schema.constraints)
     if entities:
         policy="allow" if all(s.allow_nested for s in entities.values()) else ("nested" if any(s.allow_nested for s in entities.values()) else "disallow")
