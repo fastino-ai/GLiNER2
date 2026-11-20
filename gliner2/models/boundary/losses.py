@@ -250,12 +250,10 @@ def candidate_pair_loss(
     if split_positive_negative:
         pos_mask = effective & (labels > 0.5)
         neg_mask = effective & (labels <= 0.5)
-        loss = logits.new_zeros(())
-        if bool(pos_mask.any()):
-            loss = loss + _reduce(bce, pos_mask, query_mask, reduction)
-        if bool(neg_mask.any()):
-            loss = loss + _reduce(bce, neg_mask, query_mask, reduction)
-        return loss
+        return (
+            _reduce(bce, pos_mask, query_mask, reduction)
+            + _reduce(bce, neg_mask, query_mask, reduction)
+        )
     return _reduce(bce, effective, query_mask, reduction)
 
 
