@@ -8,6 +8,7 @@ per-query ``[B, Q, C]`` contract.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Optional
@@ -21,6 +22,8 @@ from gliner2.models.boundary.content import SpanContentPooler
 from gliner2.models.boundary.indexing import gather_rows
 from gliner2.models.boundary.proposal import ProposalStats, select_top_boundaries
 from gliner2.models.outputs import CandidateTensorBatch
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -73,8 +76,19 @@ def _deduplicate_pool(
     valid: torch.BoolTensor,
     capacity: int,
     n_boundaries: int,
-) -> tuple[torch.LongTensor, torch.BoolTensor]:
-    """Deduplicate document keys, retaining the highest-priority occurrence."""
+    *,
+    return_unique_count: bool = False,
+) -> tuple[torch.LongTensor, torch.BoolTensor] | tuple[torch.LongTensor, torch.BoolTensor, torch.LongTensor]:
+    """Deduplicate document keys, retaining the highest-priority occurrence.
+
+    ``return_unique_count`` additionally returns, per sample, the number of
+    *distinct* valid keys that existed before truncating to ``capacity`` --
+    i.e. how many unique candidate spans across every active query actually
+    wanted a pool slot. Comparing that against ``capacity`` is how callers
+    detect oversubscription (see ``DocumentCandidatePool.forward``); it costs
+    one extra reduction over tensors this function already built, so it's
+    opt-in rather than always computed.
+    """
     invalid_key = n_boundaries * n_boundaries
     keys = torch.where(valid, keys, torch.full_like(keys, invalid_key))
     scores = torch.where(valid, scores, torch.full_like(scores, MASK_LOGIT))
@@ -89,6 +103,7 @@ def _deduplicate_pool(
     first = torch.ones_like(valid)
     first[..., 1:] = keys[..., 1:] != keys[..., :-1]
     keep = valid & first
+    unique_count = keep.sum(-1) if return_unique_count else None
     order = torch.argsort(
         torch.where(keep, scores, torch.full_like(scores, MASK_LOGIT)),
         dim=-1,
@@ -101,6 +116,8 @@ def _deduplicate_pool(
         pad = capacity - selected_keys.shape[-1]
         selected_keys = F.pad(selected_keys, (0, pad))
         selected_valid = F.pad(selected_valid, (0, pad), value=False)
+    if return_unique_count:
+        return selected_keys, selected_valid, unique_count
     return selected_keys, selected_valid
 
 
@@ -246,9 +263,37 @@ class DocumentCandidatePool(nn.Module):
             all_scores = torch.cat((all_scores, gold_priority), -1)
 
         with torch.no_grad():
-            selected_keys, selected_valid = _deduplicate_pool(
-                all_keys, all_scores, all_valid, self.pool_size, n
+            selected_keys, selected_valid, unique_candidate_count = _deduplicate_pool(
+                all_keys, all_scores, all_valid, self.pool_size, n,
+                return_unique_count=True,
             )
+            oversubscribed = unique_candidate_count > self.pool_size
+            if bool(oversubscribed.any()):
+                # More distinct candidate spans wanted a pool slot than
+                # pool_size provides, so the lowest-priority ones were
+                # dropped after this sample's min_pool_per_query quota was
+                # exhausted. This is silent by design (no exception, no
+                # field in the return value) -- see the PR description for
+                # the record/entity accuracy degradation this produces.
+                # TODO(reviewer): decide whether this should be rate-limited
+                # (e.g. once per process, or once per N calls) instead of
+                # firing on every affected forward pass -- left as-is for
+                # now since severity scales with how often callers hit this.
+                logger.warning(
+                    "DocumentCandidatePool: %d/%d sample(s) had more distinct "
+                    "candidate spans than pool_size=%d (worst case %d "
+                    "candidates for %d slots); lowest-priority candidates "
+                    "were dropped after each query's min_pool_per_query=%d "
+                    "quota was filled. Affected queries can silently return "
+                    "null, or -- for record/structure fields -- bind to a "
+                    "different instance's mention instead of their own. "
+                    "Consider raising pool_size, reducing how many schema "
+                    "fields/queries run in one call, or pre-segmenting long "
+                    "or multi-section documents.",
+                    int(oversubscribed.sum()), b, self.pool_size,
+                    int(unique_candidate_count.max()), self.pool_size,
+                    self.min_pool_per_query,
+                )
         selected_keys = torch.where(
             selected_valid, selected_keys, torch.zeros_like(selected_keys)
         )
