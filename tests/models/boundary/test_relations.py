@@ -78,6 +78,22 @@ def test_no_self_pairs_by_default():
     assert len(pairs) == 0  # identical span filtered as a self-pair
 
 
+def test_compact_keys_align_with_pair_tensors_as_plain_ints():
+    layout = _layout(["person", "org"])
+    cands = _candidates([[(0, 1), (4, 5)], [(2, 3), (5, 6)]], length=7)
+    specs = [RelationTypeSpec("works_for", (0,), (1,)), RelationTypeSpec("rival", (1,), (0,))]
+    pairs = TypedRelationPairGenerator().generate(cands, [layout], specs)
+
+    assert len(pairs) == 8
+    for i in range(len(pairs)):
+        rel = specs[int(pairs.relation_index[i])]
+        assert pairs.relation_types[i] == rel.relation_type
+        assert pairs.head_keys[i][1:] == (int(pairs.head_start[i]), int(pairs.head_end[i]))
+        assert pairs.tail_keys[i][1:] == (int(pairs.tail_start[i]), int(pairs.tail_end[i]))
+        assert pairs.head_keys[i][0] == ("person" if rel.relation_type == "works_for" else "org")
+    assert {type(v) for key in pairs.head_keys + pairs.tail_keys for v in key[1:]} == {int}
+
+
 def test_sparse_relation_scorer_overfits_gold_pairs():
     torch.manual_seed(0)
     hidden = 16
