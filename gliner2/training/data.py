@@ -190,6 +190,19 @@ class DataLoader_Factory:
         seed: int = 42,
         validate: bool = False,
     ) -> List[Dict[str, Any]]:
+        """Load data from any supported format; see ``load_indexed``."""
+        return DataLoader_Factory.load_indexed(
+            data, max_samples=max_samples, shuffle=shuffle, seed=seed, validate=validate
+        )[0]
+
+    @staticmethod
+    def load_indexed(
+        data: Any,
+        max_samples: int = -1,
+        shuffle: bool = True,
+        seed: int = 42,
+        validate: bool = False,
+    ) -> tuple[list[dict[str, Any]], list[int]]:
         """
         Load data from any supported format.
         
@@ -210,8 +223,9 @@ class DataLoader_Factory:
             
         Returns
         -------
-        List[Dict[str, Any]]
-            List of records in unified format.
+        tuple[list[dict[str, Any]], list[int]]
+            Records in unified format and, for each, its position in the
+            loaded source before validation, shuffling and truncation.
         """
         fmt = detect_data_format(data)
         
@@ -230,6 +244,9 @@ class DataLoader_Factory:
             records = data.data.copy()
         else:
             raise ValueError(f"Unsupported data format: {type(data)}")
+        sources = list(range(len(records)))
+        if fmt == DataFormat.EXTRACTOR_DATASET:
+            sources = list(getattr(data, "source_indices", sources))
         
         # Validate if requested
         if validate and records:
@@ -256,17 +273,22 @@ class DataLoader_Factory:
                 
                 # Filter records to keep only valid ones
                 records = [records[i] for i in valid_indices]
+                sources = [sources[i] for i in valid_indices]
         
-        # Shuffle
+        # Shuffle positions; random.shuffle's permutation depends only on length.
         if shuffle and records:
             random.seed(seed)
-            random.shuffle(records)
+            order = list(range(len(records)))
+            random.shuffle(order)
+            records = [records[i] for i in order]
+            sources = [sources[i] for i in order]
         
         # Limit samples
         if max_samples > 0 and len(records) > max_samples:
             records = records[:max_samples]
+            sources = sources[:max_samples]
         
-        return records
+        return records, sources
     
     @staticmethod
     def _load_jsonl(path: Union[str, Path]) -> List[Dict]:
