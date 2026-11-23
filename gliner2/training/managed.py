@@ -15,6 +15,7 @@ import random
 import shutil
 import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Protocol
@@ -94,6 +95,17 @@ class ManagedTrainingPlan:
         canonical = {"examples": [row.to_dict() for row in self._examples],
                      "config": settings, "architecture": architecture, "shuffle": shuffle}
         self.fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+
+    @property
+    def example_count(self) -> int:
+        return len(self._examples)
+
+    @property
+    def sampler(self) -> str:
+        """Name the batch ordering policy that ``batch_indices`` applies."""
+        if self.shuffle and self.architecture == "boundary" and self.config.group_by_length:
+            return f"managed.length_grouped(window={self.config.length_group_window_batches})"
+        return "managed.random" if self.shuffle else "managed.sequential"
 
     def epoch(self, index: int) -> int:
         if not 0 <= index < self.batch_count:
@@ -175,7 +187,9 @@ class ManagedTraining:
 
     def __init__(self, session: SessionOperations, plan: ManagedTrainingPlan, *,
                  eval_examples: list[InputExample] | None = None, keep_best: bool | None = None,
-                 row_order_attempt_id: str | None = None):
+                 row_order_attempt_id: str | None = None,
+                 row_order_identities: Sequence[str] | None = None,
+                 row_order_source_binding: str | None = None):
         if session.step or session.pending_batches:
             raise ValueError("managed driver requires a fresh session or load_state")
         if session.max_steps != plan.max_steps:
@@ -210,10 +224,21 @@ class ManagedTraining:
         self._failed = False
         self._started = time.monotonic()
         self._previous_elapsed = 0.0
-        self._row_order_receipt = (
-            ConsumedRowOrder(attempt_id=row_order_attempt_id, seed=plan.config.seed, shuffle=plan.shuffle)
-            if row_order_attempt_id is not None else None
-        )
+        self._row_order_receipt = None
+        if (
+            row_order_attempt_id is not None
+            or row_order_identities is not None
+            or row_order_source_binding is not None
+        ):
+            if row_order_attempt_id is None or row_order_identities is None or row_order_source_binding is None:
+                raise ValueError("row-order receipt requires an attempt, row identities and a source binding")
+            if len(row_order_identities) != plan.example_count:
+                raise ValueError("row-order identities must match the managed plan's examples")
+            self._row_order_receipt = ConsumedRowOrder(
+                attempt_id=row_order_attempt_id, seed=plan.config.seed, shuffle=plan.shuffle,
+                row_identities=row_order_identities, source_binding=row_order_source_binding,
+            )
+            self._row_order_receipt.bind_sampler(plan.sampler)
 
     @property
     def complete(self) -> bool:
@@ -251,7 +276,7 @@ class ManagedTraining:
             self.session.optim_step()
         if self._row_order_receipt is not None:
             self._row_order_receipt.observe(
-                epoch=self.plan.epoch(index), ordinals=self.plan.batch_indices(index)
+                epoch=self.plan.epoch(index), positions=self.plan.batch_indices(index)
             )
         self._loss_sum += metrics["loss"] * len(batch)
         self._samples += len(batch)

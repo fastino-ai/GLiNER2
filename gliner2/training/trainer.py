@@ -51,7 +51,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -137,7 +137,7 @@ class ExtractorDataset(Dataset):
             checks that entity spans, relation values, and structure
             field values exist in the text.
         """
-        self.data = DataLoader_Factory.load(
+        self.data, self.source_indices = DataLoader_Factory.load_indexed(
             data=data,
             max_samples=max_samples,
             shuffle=shuffle,
@@ -449,6 +449,7 @@ class ExtractorTrainer:
         self.model = model
         self.config = config
         self._row_order_receipt: ConsumedRowOrder | None = None
+        self._row_source_indices: tuple[int, ...] = ()
         if config.bf16 and not torch.cuda.is_bf16_supported():
             raise RuntimeError("bf16 was requested but this CUDA device does not support it")
         if (
@@ -1301,6 +1302,11 @@ class ExtractorTrainer:
         elif self.is_distributed:
             sampler = DistributedSampler(dataset, shuffle=shuffle)
             shuffle = False
+        if track_row_ordinals:
+            self._row_order_receipt.bind_sampler(
+                f"native.length_grouped(window={self.config.length_group_window_batches})"
+                if use_length_groups else "native.random" if shuffle else "native.sequential"
+            )
 
         model_config = self._get_model_config()
         max_len = self.config.max_len or getattr(model_config, "max_len", None)
@@ -1351,6 +1357,8 @@ class ExtractorTrainer:
             eval_data: TrainDataInput = None,
             *,
             row_order_attempt_id: str | None = None,
+            row_order_identities: Sequence[str] | None = None,
+            row_order_source_binding: str | None = None,
     ) -> Dict[str, Any]:
         """
         Main training loop.
@@ -1368,6 +1376,10 @@ class ExtractorTrainer:
         eval_data : TrainDataInput, optional
             Evaluation data (same formats supported).
 
+        row_order_attempt_id, row_order_identities, row_order_source_binding : optional
+            Together, request a consumed-row-order receipt: one private 64-hex
+            identity per ``train_data`` source row, hashed in consumption order.
+
         Returns
         -------
         Dict[str, Any]
@@ -1382,11 +1394,29 @@ class ExtractorTrainer:
 
         if row_order_attempt_id is not None and self.is_distributed:
             raise ValueError("global row-order receipt is unavailable for distributed training")
-        self._row_order_receipt = (
-            ConsumedRowOrder(attempt_id=row_order_attempt_id, seed=self.config.seed, shuffle=True)
-            if row_order_attempt_id is not None else None
-        )
+        self._row_order_receipt = None
+        if (
+            row_order_attempt_id is not None
+            or row_order_identities is not None
+            or row_order_source_binding is not None
+        ):
+            if row_order_attempt_id is None or row_order_identities is None or row_order_source_binding is None:
+                raise ValueError("row-order receipt requires an attempt, row identities and a source binding")
+            self._row_order_receipt = ConsumedRowOrder(
+                attempt_id=row_order_attempt_id, seed=self.config.seed, shuffle=True,
+                row_identities=row_order_identities, source_binding=row_order_source_binding,
+            )
         train_dataset = self._prepare_data(train_data, is_train=True)
+        self._row_source_indices = ()
+        if self._row_order_receipt is not None:
+            if not isinstance(train_dataset, ExtractorDataset):
+                raise ValueError("row-order receipt requires an ExtractorDataset")
+            self._row_source_indices = tuple(train_dataset.source_indices)
+            if (
+                not self._row_source_indices
+                or max(self._row_source_indices) >= self._row_order_receipt.row_count
+            ):
+                raise ValueError("row-order identities do not cover the training rows")
         eval_dataset = self._prepare_data(eval_data, is_train=False) if eval_data else None
 
         # Fix Bug #7: Validate training setup
@@ -1600,7 +1630,10 @@ class ExtractorTrainer:
                     ordinals = getattr(batch, "_source_ordinals", None)
                     if not isinstance(ordinals, tuple) or len(ordinals) != len(batch):
                         raise ValueError("training batch has no exact consumed row ordinals")
-                    self._row_order_receipt.observe(epoch=epoch, ordinals=ordinals)
+                    self._row_order_receipt.observe(
+                        epoch=epoch,
+                        positions=tuple(self._row_source_indices[index] for index in ordinals),
+                    )
                 epoch_loss += micro_loss
                 epoch_steps += 1
                 micro += 1
