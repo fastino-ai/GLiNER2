@@ -1395,7 +1395,11 @@ class ExtractorTrainer:
         if row_order_attempt_id is not None and self.is_distributed:
             raise ValueError("global row-order receipt is unavailable for distributed training")
         self._row_order_receipt = None
-        if row_order_attempt_id is not None or row_order_identities is not None:
+        if (
+            row_order_attempt_id is not None
+            or row_order_identities is not None
+            or row_order_source_binding is not None
+        ):
             if row_order_attempt_id is None or row_order_identities is None or row_order_source_binding is None:
                 raise ValueError("row-order receipt requires an attempt, row identities and a source binding")
             self._row_order_receipt = ConsumedRowOrder(

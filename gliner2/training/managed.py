@@ -225,7 +225,11 @@ class ManagedTraining:
         self._started = time.monotonic()
         self._previous_elapsed = 0.0
         self._row_order_receipt = None
-        if row_order_attempt_id is not None or row_order_identities is not None:
+        if (
+            row_order_attempt_id is not None
+            or row_order_identities is not None
+            or row_order_source_binding is not None
+        ):
             if row_order_attempt_id is None or row_order_identities is None or row_order_source_binding is None:
                 raise ValueError("row-order receipt requires an attempt, row identities and a source binding")
             if len(row_order_identities) != plan.example_count:

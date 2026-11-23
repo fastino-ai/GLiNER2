@@ -1,6 +1,7 @@
 """Consumed-row receipts hash private row identities in the order batches are consumed."""
 
 import hashlib
+import itertools
 import random
 
 import pytest
@@ -15,6 +16,10 @@ from tests.test_training_session import ROWS, config
 BINDING = "sha256:" + "c" * 64
 FIRST = InputExample(text="john works at google", entities={"person": ["john"]})
 SECOND = InputExample(text="mary lives in paris", entities={"person": ["mary"]})
+RECEIPT_OPTIONS = ("row_order_attempt_id", "row_order_identities", "row_order_source_binding")
+INCOMPLETE_OPTIONS = [
+    names for size in (1, 2) for names in itertools.combinations(RECEIPT_OPTIONS, size)
+]
 
 
 def _identity(name: str) -> str:
@@ -101,6 +106,50 @@ def test_native_receipt_requires_identities_for_every_row(tmp_path):
     with pytest.raises(ValueError, match="do not cover"):
         trainer.train(train_data=[FIRST, SECOND], row_order_attempt_id="native",
                       row_order_identities=[_identity("only")], row_order_source_binding=BINDING)
+
+
+def _options(names, identities):
+    values = {
+        "row_order_attempt_id": "attempt",
+        "row_order_identities": identities,
+        "row_order_source_binding": BINDING,
+    }
+    return {name: values[name] for name in names}
+
+
+@pytest.mark.parametrize("names", INCOMPLETE_OPTIONS, ids="+".join)
+def test_native_rejects_every_incomplete_receipt_option_set(tmp_path, names):
+    cfg = config(tmp_path / "partial", num_epochs=1, batch_size=1, pin_memory=False)
+    trainer = ExtractorTrainer(build_tiny_span_model(), cfg)
+    options = _options(names, [_identity("first"), _identity("second")])
+    with pytest.raises(ValueError, match="attempt, row identities and a source binding"):
+        trainer.train(train_data=[FIRST, SECOND], **options)
+
+
+def test_native_without_receipt_options_trains_without_a_receipt(tmp_path):
+    cfg = config(tmp_path / "none", num_epochs=1, batch_size=1, pin_memory=False)
+    result = ExtractorTrainer(build_tiny_span_model(), cfg).train(train_data=[FIRST, SECOND])
+    assert "consumed_row_order" not in result
+
+
+@pytest.mark.parametrize("names", INCOMPLETE_OPTIONS, ids="+".join)
+def test_managed_rejects_every_incomplete_receipt_option_set(tmp_path, names):
+    cfg = config(tmp_path / "managed-partial", num_epochs=1, batch_size=1)
+    plan = ManagedTrainingPlan([FIRST, SECOND], cfg)
+    session = TrainingSession(build_tiny_span_model(), cfg, max_steps=plan.max_steps)
+    options = _options(names, [_identity("first"), _identity("second")])
+    with pytest.raises(ValueError, match="attempt, row identities and a source binding"):
+        ManagedTraining(session, plan, **options)
+
+
+def test_managed_without_receipt_options_reports_no_receipt(tmp_path):
+    cfg = config(tmp_path / "managed-none", num_epochs=1, batch_size=1)
+    plan = ManagedTrainingPlan([FIRST, SECOND], cfg)
+    driver = ManagedTraining(TrainingSession(build_tiny_span_model(), cfg, max_steps=plan.max_steps), plan)
+    try:
+        assert "consumed_row_order" not in driver.run()
+    finally:
+        driver.close()
 
 
 def test_managed_receipt_matches_consumed_plan_across_epochs(tmp_path):
